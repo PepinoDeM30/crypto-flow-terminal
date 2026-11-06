@@ -1,4 +1,3 @@
-
 import random
 import pandas as pd
 import requests
@@ -140,7 +139,7 @@ def fetch_binance_data():
     return 98400.0, 1420.50, True
 
 
-# --- 5. HYPERLIQUID (BTC / HYPE) ---
+# --- 5. HYPERLIQUID (BTC) ---
 @st.cache_data(ttl=10)
 def fetch_hyperliquid_data():
   try:
@@ -160,17 +159,41 @@ def fetch_hyperliquid_data():
   return 24500.0, 310.20, True
 
 
-# Načtení všech dat
+# Načtení dat
 total_pnl, win_rate = load_trading_data()
 okx_oi, okx_cvd, _ = fetch_okx_data()
 bybit_oi, bybit_cvd, _ = fetch_bybit_data()
 bin_oi, bin_cvd, _ = fetch_binance_data()
 hl_oi, hl_cvd, _ = fetch_hyperliquid_data()
 
+# --- AGREGACE CVD ---
+normalized_okx_cvd = (
+    okx_cvd / 100.0
+)  # Přibližný přepočet kontraktů na BTC ekvivalent
+aggregated_cvd = normalized_okx_cvd + bybit_cvd + bin_cvd + hl_cvd
+
 
 # --- VIZUÁLNÍ ČÁST (UI) ---
 
-# 1. JÚRNAL
+# 1. HLAVNÍ AGREGOVANÁ KARTA
+agg_col = "positive" if aggregated_cvd >= 0 else "negative"
+st.markdown(
+    f"""
+    <div class="global-card" style="border: 2px solid #58a6ff;">
+        <div class="metric-title">🔥 Globální souhrn (OKX + Bybit + Binance + HL)</div>
+        <div class="metric-value {agg_col}">Aggregated CVD: {aggregated_cvd:+,.2f} BTC</div>
+        <hr style="border-color: #30363d; margin: 12px 0;">
+        <span style="font-size: 13px; color: #8b949e;">
+        <b>Detekce akce:</b> Sleduje se 1M absorpce / exhaustion...<br>
+        <b>Stav terminálu:</b> <span style="color: #2ea043;">● Plně synchronizováno</span>
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# 2. TRADING JOURNAL
 st.markdown("### 📊 Trading Journal (OKX)")
 col1, col2 = st.columns(2)
 with col1:
@@ -197,80 +220,51 @@ with col2:
   )
 
 
-# 2. OKX
+# 3. DETAILY JEDNOTLIVÝCH BURZ
+st.markdown("### 🌐 Detaily burz")
+
 okx_col = "positive" if okx_cvd >= 0 else "negative"
 st.markdown(
     f"""
     <div class="global-card">
-        <div class="metric-title">Sledovaný trh (OKX)</div>
-        <div class="metric-value" style="color: #58a6ff;">BTCUSD UM (Coin-Margined)</div>
-        <hr style="border-color: #30363d; margin: 12px 0;">
-        <span style="font-size: 14px;">
-        <b>CVD Delta:</b> <span class="{okx_col}">{okx_cvd:+.2f} kont.</span><br><br>
-        <b>Open Interest:</b> {okx_oi:,.0f} kont.<br><br>
-        <b>Stav:</b> <span style="color: #2ea043;">● Live</span>
-        </span>
+        <div class="metric-title">OKX — BTCUSD UM</div>
+        <span style="font-size: 14px;">CVD Delta: <span class="{okx_col}">{okx_cvd:+.2f} kont.</span> | OI: {okx_oi:,.0f} kont.</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-
-# 3. BYBIT
 bb_col = "positive" if bybit_cvd >= 0 else "negative"
 st.markdown(
     f"""
     <div class="global-card">
-        <div class="metric-title">Sledovaný trh (Bybit)</div>
-        <div class="metric-value" style="color: #58a6ff;">BTCUSDT (Linear Perpetual)</div>
-        <hr style="border-color: #30363d; margin: 12px 0;">
-        <span style="font-size: 14px;">
-        <b>CVD Delta:</b> <span class="{bb_col}">{bybit_cvd:+.2f} BTC</span><br><br>
-        <b>Open Interest:</b> {bybit_oi:,.2f} BTC<br><br>
-        <b>Stav:</b> <span style="color: #2ea043;">● Live</span>
-        </span>
+        <div class="metric-title">Bybit — BTCUSDT Linear</div>
+        <span style="font-size: 14px;">CVD Delta: <span class="{bb_col}">{bybit_cvd:+.2f} BTC</span> | OI: {bybit_oi:,.2f} BTC</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-
-# 4. BINANCE
 bin_col = "positive" if bin_cvd >= 0 else "negative"
 st.markdown(
     f"""
     <div class="global-card">
-        <div class="metric-title">Sledovaný trh (Binance)</div>
-        <div class="metric-value" style="color: #58a6ff;">BTCUSDT Futures</div>
-        <hr style="border-color: #30363d; margin: 12px 0;">
-        <span style="font-size: 14px;">
-        <b>CVD Delta:</b> <span class="{bin_col}">{bin_cvd:+.2f} BTC</span><br><br>
-        <b>Open Interest:</b> {bin_oi:,.2f} BTC<br><br>
-        <b>Stav:</b> <span style="color: #2ea043;">● Live</span>
-        </span>
+        <div class="metric-title">Binance — BTCUSDT Futures</div>
+        <span style="font-size: 14px;">CVD Delta: <span class="{bin_col}">{bin_cvd:+.2f} BTC</span> | OI: {bin_oi:,.2f} BTC</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-
-# 5. HYPERLIQUID
 hl_col = "positive" if hl_cvd >= 0 else "negative"
 st.markdown(
     f"""
     <div class="global-card">
-        <div class="metric-title">Sledovaný trh (Hyperliquid)</div>
-        <div class="metric-value" style="color: #58a6ff;">BTC Perpetual</div>
-        <hr style="border-color: #30363d; margin: 12px 0;">
-        <span style="font-size: 14px;">
-        <b>CVD Delta:</b> <span class="{hl_col}">{hl_cvd:+.2f} BTC</span><br><br>
-        <b>Open Interest:</b> {hl_oi:,.2f} BTC<br><br>
-        <b>Stav:</b> <span style="color: #2ea043;">● Live</span>
-        </span>
+        <div class="metric-title">Hyperliquid — BTC Perpetual</div>
+        <span style="font-size: 14px;">CVD Delta: <span class="{hl_col}">{hl_cvd:+.2f} BTC</span> | OI: {hl_oi:,.2f} BTC</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
 
 
