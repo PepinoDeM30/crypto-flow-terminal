@@ -76,18 +76,16 @@ def load_trading_data():
   return -37.77, 36.84
 
 
-# --- 2. FUNKCE PRO ŽIVÁ DATA Z OKX (BTCUSD UM / BTC-USD-SWAP) ---
+# --- 2. FUNKCE PRO ŽIVÁ DATA Z OKX (BTCUSD UM) ---
 @st.cache_data(ttl=10)
 def fetch_okx_market_data():
   try:
-    # Open Interest pro BTC-USD-SWAP (Coin-margined / UM)
     oi_url = (
         "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USD-SWAP"
     )
     oi_res = requests.get(oi_url, timeout=3).json()
     oi_val = float(oi_res["data"][0]["oi"])
 
-    # Recent Trades pro výpočet krátkodobého CVD
     trades_url = (
         "https://www.okx.com/api/v5/market/trades?instId=BTC-USD-SWAP&limit=100"
     )
@@ -108,9 +106,38 @@ def fetch_okx_market_data():
     return 0.0, 0.0, False
 
 
+# --- 3. FUNKCE PRO ŽIVÁ DATA Z BYBIT (BTCUSDT) ---
+@st.cache_data(ttl=10)
+def fetch_bybit_market_data():
+  try:
+    oi_url = "https://api.bybit.com/v5/market/open-interest?category=linear&symbol=BTCUSDT&intervalTime=5min&limit=1"
+    oi_res = requests.get(oi_url, timeout=3).json()
+    oi_val = float(oi_res["result"]["list"][0]["openInterest"])
+
+    trades_url = (
+        "https://api.bybit.com/v5/market/recent-trade?category=linear&symbol=BTCUSDT&limit=100"
+    )
+    trades_res = requests.get(trades_url, timeout=3).json()
+
+    buy_vol = 0
+    sell_vol = 0
+    for t in trades_res.get("result", {}).get("list", []):
+      sz = float(t["size"])
+      if t["side"] == "Buy":
+        buy_vol += sz
+      else:
+        sell_vol += sz
+
+    cvd_delta = buy_vol - sell_vol
+    return oi_val, cvd_delta, True
+  except Exception:
+    return 0.0, 0.0, False
+
+
 # Načtení dat
 total_pnl, win_rate = load_trading_data()
 okx_oi, okx_cvd, okx_success = fetch_okx_market_data()
+bybit_oi, bybit_cvd, bybit_success = fetch_bybit_market_data()
 
 # --- SEKCE 1: VÝKON ÚČTU ---
 st.markdown("### 📊 Trading Journal (OKX)")
@@ -141,19 +168,20 @@ with col2:
       unsafe_allow_html=True,
   )
 
-# --- SEKCE 2: ŽIVÁ DATA OKX (BTCUSD UM) ---
+# --- SEKCE 2: ŽIVÁ DATA OKX ---
 st.markdown("### ⚡ OKX Live Order Flow")
-
 if okx_success:
-  cvd_color = "positive" if okx_cvd >= 0 else "negative"
-  cvd_text = f"+{okx_cvd:.2f} contracts" if okx_cvd >= 0 else f"{okx_cvd:.2f} contracts"
-  oi_text = f"{okx_oi:,.0f} kont."
-  server_status = '<span style="color: #2ea043;">● OKX Live (BTCUSD UM)</span>'
+  okx_col = "positive" if okx_cvd >= 0 else "negative"
+  okx_cvd_txt = (
+      f"+{okx_cvd:.2f} contracts" if okx_cvd >= 0 else f"{okx_cvd:.2f} contracts"
+  )
+  okx_oi_txt = f"{okx_oi:,.0f} kont."
+  okx_status = '<span style="color: #2ea043;">● OKX Live</span>'
 else:
-  cvd_color = "neutral"
-  cvd_text = "Načítání..."
-  oi_text = "Načítání..."
-  server_status = '<span style="color: #e3b341;">● Čeká se na data burzy</span>'
+  okx_col = "neutral"
+  okx_cvd_txt = "Načítání..."
+  okx_oi_txt = "Načítání..."
+  okx_status = '<span style="color: #e3b341;">● Čeká se na data</span>'
 
 st.markdown(
     f"""
@@ -162,13 +190,43 @@ st.markdown(
         <div class="metric-value" style="color: #58a6ff;">BTCUSD UM (Coin-Margined)</div>
         <hr style="border-color: #30363d; margin: 12px 0;">
         <span style="font-size: 14px;">
-        <b>Krátkodobé CVD (Delta):</b> <span class="{cvd_color}">{cvd_text}</span><br><br>
-        <b>Open Interest (OI):</b> <span style="color: #ffffff;">{oi_text}</span><br><br>
-        <b>Stav serveru:</b> {server_status}
+        <b>Krátkodobé CVD (Delta):</b> <span class="{okx_col}">{okx_cvd_txt}</span><br><br>
+        <b>Open Interest (OI):</b> <span style="color: #ffffff;">{okx_oi_txt}</span><br><br>
+        <b>Stav serveru:</b> {okx_status}
         </span>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
+# --- SEKCE 3: ŽIVÁ DATA BYBIT ---
+st.markdown("### 🌊 Bybit Live Order Flow")
+if bybit_success:
+  bb_col = "positive" if bybit_cvd >= 0 else "negative"
+  bb_cvd_txt = f"+{bybit_cvd:.2f} BTC" if bybit_cvd >= 0 else f"{bybit_cvd:.2f} BTC"
+  bb_oi_txt = f"{bybit_oi:,.2f} BTC"
+  bb_status = '<span style="color: #2ea043;">● Bybit Live</span>'
+else:
+  bb_col = "neutral"
+  bb_cvd_txt = "Načítání..."
+  bb_oi_txt = "Načítání..."
+  bb_status = '<span style="color: #e3b341;">● Čeká se na data</span>'
+
+st.markdown(
+    f"""
+    <div class="global-card">
+        <div class="metric-title">Sledovaný trh (Bybit)</div>
+        <div class="metric-value" style="color: #58a6ff;">BTCUSDT (Linear Perpetual)</div>
+        <hr style="border-color: #30363d; margin: 12px 0;">
+        <span style="font-size: 14px;">
+        <b>Krátkodobé CVD (Delta):</b> <span class="{bb_col}">{bb_cvd_txt}</span><br><br>
+        <b>Open Interest (OI):</b> <span style="color: #ffffff;">{bb_oi_txt}</span><br><br>
+        <b>Stav serveru:</b> {bb_status}
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 
