@@ -1,3 +1,4 @@
+
 import pandas as pd
 import streamlit as st
 
@@ -49,39 +50,30 @@ st.write("Přehled výkonu účtu & živý order flow.")
 
 
 # --- FUNKCE PRO STAŽENÍ A VÝPOČET DAT Z GOOGLE SHEETS ---
-@st.cache_data(ttl=60)  # Data se kešují na 60 vteřin pro rychlost
+@st.cache_data(ttl=60)
 def load_trading_data():
   try:
     sheet_id = "1nyV3Xa0BNX-DVLkkbd-wshjuHzPcjOVw3jr6O3BjxCw"
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    df = pd.read_csv(csv_url)
 
-    # Obchody začínají od řádku 16 (index 16 v pandas)
-    trades_df = df.iloc[16:].copy()
-    trades_df.columns = [
-        "Datum",
-        "Pair",
-        "LongShort",
-        "Risk",
-        "Exit",
-        "Vysledek",
-        "Fees",
-        "NaN",
-    ]
-    trades_df = trades_df.dropna(subset=["Datum"])
+    df = pd.read_csv(csv_url, skiprows=15)
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # Převod na čísla
-    trades_df["Vysledek"] = pd.to_numeric(trades_df["Vysledek"], errors="coerce")
-    trades_df = trades_df.dropna(subset=["Vysledek"])
+    if "Vysledek" in df.columns:
+      df["Vysledek"] = pd.to_numeric(df["Vysledek"], errors="coerce")
+      trades_df = df.dropna(subset=["Vysledek"])
 
-    total_pnl = trades_df["Vysledek"].sum()
-    total_trades = len(trades_df)
-    winning_trades = len(trades_df[trades_df["Vysledek"] > 0])
-    win_rate = (
-        (winning_trades / total_trades) * 100 if total_trades > 0 else 0
-    )
+      total_pnl = trades_df["Vysledek"].sum()
+      total_trades = len(trades_df)
+      winning_trades = len(trades_df[trades_df["Vysledek"] > 0])
+      win_rate = (
+          (winning_trades / total_trades) * 100 if total_trades > 0 else 0
+      )
 
-    return total_pnl, win_rate, True
+      return total_pnl, win_rate, True
+    else:
+      return 0.0, 0.0, False
+
   except Exception as e:
     return 0.0, 0.0, False
 
@@ -97,9 +89,7 @@ col1, col2 = st.columns(2)
 with col1:
   if success:
     pnl_class = "negative" if total_pnl < 0 else "positive"
-    pnl_text = f"{total_pnl:,.2f} USD"
-    if total_pnl < 0:
-      pnl_text = f"-${abs(total_pnl):,.2f} USD"
+    pnl_text = f"-${abs(total_pnl):,.2f} USD" if total_pnl < 0 else f"{total_pnl:,.2f} USD"
   else:
     pnl_text = "Chyba načítání"
     pnl_class = "neutral"
@@ -142,5 +132,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 
