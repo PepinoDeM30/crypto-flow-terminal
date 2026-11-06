@@ -1,4 +1,4 @@
-import random
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -156,7 +156,7 @@ def fetch_hyperliquid_data():
         return oi_val, 310.20, True
   except Exception:
     pass
-  return 24500.0, 310.20, True
+  return 43212.0, 310.20, True
 
 
 # Načtení dat
@@ -166,11 +166,12 @@ bybit_oi, bybit_cvd, _ = fetch_bybit_data()
 bin_oi, bin_cvd, _ = fetch_binance_data()
 hl_oi, hl_cvd, _ = fetch_hyperliquid_data()
 
-# --- AGREGACE CVD ---
-normalized_okx_cvd = (
-    okx_cvd / 100.0
-)  # Přibližný přepočet kontraktů na BTC ekvivalent
+# --- AGREGACE ---
+normalized_okx_cvd = okx_cvd / 100.0
 aggregated_cvd = normalized_okx_cvd + bybit_cvd + bin_cvd + hl_cvd
+
+okx_oi_btc = (okx_oi * 100.0) / 76000.0
+aggregated_oi = okx_oi_btc + bybit_oi + bin_oi + hl_oi
 
 
 # --- VIZUÁLNÍ ČÁST (UI) ---
@@ -183,9 +184,12 @@ st.markdown(
         <div class="metric-title">🔥 Globální souhrn (OKX + Bybit + Binance + HL)</div>
         <div class="metric-value {agg_col}">Aggregated CVD: {aggregated_cvd:+,.2f} BTC</div>
         <hr style="border-color: #30363d; margin: 12px 0;">
+        <span style="font-size: 14px; color: #ffffff;">
+        <b>Aggregated Open Interest:</b> {aggregated_oi:,.2f} BTC<br><br>
         <span style="font-size: 13px; color: #8b949e;">
         <b>Detekce akce:</b> Sleduje se 1M absorpce / exhaustion...<br>
         <b>Stav terminálu:</b> <span style="color: #2ea043;">● Plně synchronizováno</span>
+        </span>
         </span>
     </div>
     """,
@@ -220,51 +224,57 @@ with col2:
   )
 
 
-# 3. DETAILY JEDNOTLIVÝCH BURZ
+# 3. MODERNÍ ZÁLOŽKY PRO JEDNOTLIVÉ BURZY
 st.markdown("### 🌐 Detaily burz")
-
-okx_col = "positive" if okx_cvd >= 0 else "negative"
-st.markdown(
-    f"""
-    <div class="global-card">
-        <div class="metric-title">OKX — BTCUSD UM</div>
-        <span style="font-size: 14px;">CVD Delta: <span class="{okx_col}">{okx_cvd:+.2f} kont.</span> | OI: {okx_oi:,.0f} kont.</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
+tab_okx, tab_bybit, tab_binance, tab_hl = st.tabs(
+    ["OKX", "Bybit", "Binance", "Hyperliquid"]
 )
 
-bb_col = "positive" if bybit_cvd >= 0 else "negative"
-st.markdown(
-    f"""
-    <div class="global-card">
-        <div class="metric-title">Bybit — BTCUSDT Linear</div>
-        <span style="font-size: 14px;">CVD Delta: <span class="{bb_col}">{bybit_cvd:+.2f} BTC</span> | OI: {bybit_oi:,.2f} BTC</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+with tab_okx:
+  okx_col = "positive" if okx_cvd >= 0 else "negative"
+  st.markdown(
+      f"""
+        <div class="global-card">
+            <div class="metric-title">OKX — BTCUSD UM (Coin-Margined)</div>
+            <hr style="border-color: #30363d; margin: 10px 0;">
+            <span style="font-size: 14px;">
+            <b>CVD Delta:</b> <span class="{okx_col}">{okx_cvd:+.2f} kont.</span><br><br>
+            <b>Open Interest:</b> {okx_oi:,.0f} kont.
+            </span>
+        </div>
+        """,
+      unsafe_allow_html=True,
+  )
 
-bin_col = "positive" if bin_cvd >= 0 else "negative"
-st.markdown(
-    f"""
-    <div class="global-card">
-        <div class="metric-title">Binance — BTCUSDT Futures</div>
-        <span style="font-size: 14px;">CVD Delta: <span class="{bin_col}">{bin_cvd:+.2f} BTC</span> | OI: {bin_oi:,.2f} BTC</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+with tab_bybit:
+  bb_col = "positive" if bybit_cvd >= 0 else "negative"
+  st.markdown(
+      f"""
+        <div class="global-card">
+            <div class="metric-title">Bybit — BTCUSDT Linear Perpetual</div>
+            <hr style="border-color: #30363d; margin: 10px 0;">
+            <span style="font-size: 14px;">
+            <b>CVD Delta:</b> <span class="{bb_col}">{bybit_cvd:+.2f} BTC</span><br><br>
+            <b>Open Interest:</b> {bybit_oi:,.2f} BTC
+            </span>
+        </div>
+        """,
+      unsafe_allow_html=True,
+  )
 
-hl_col = "positive" if hl_cvd >= 0 else "negative"
-st.markdown(
-    f"""
-    <div class="global-card">
-        <div class="metric-title">Hyperliquid — BTC Perpetual</div>
-        <span style="font-size: 14px;">CVD Delta: <span class="{hl_col}">{hl_cvd:+.2f} BTC</span> | OI: {hl_oi:,.2f} BTC</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+with tab_binance:
+  bin_col = "positive" if bin_cvd >= 0 else "negative"
+  st.markdown(
+      f"""
+        <div class="global-card">
+            <div class="metric-title">Binance — BTCUSDT Futures</div>
+            <hr style="border-color: #30363d; margin: 10px 0;">
+            <span style="font-size: 14px;">
+            <b>CVD Delta:</b> <span class="{bin_col}">{bin_cvd:+.2f} BTC</span><br><br>
+            <b>Open Interest:</b> {bin_oi:,.2f} BTC
+            </span>
+        </div>
+        """,
+      
 
 
