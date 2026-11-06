@@ -1,5 +1,5 @@
 
-import pandas as pd
+      import pandas as pd
 import requests
 import streamlit as st
 
@@ -32,15 +32,9 @@ st.markdown(
         font-weight: bold;
         margin-top: 5px;
     }
-    .negative {
-      color: #f85149;
-    }
-    .positive {
-      color: #3fb950;
-    }
-    .neutral {
-      color: #e3b341;
-    }
+    .negative { color: #f85149; }
+    .positive { color: #3fb950; }
+    .neutral { color: #e3b341; }
     </style>
 """,
     unsafe_allow_html=True,
@@ -55,7 +49,9 @@ st.write("Přehled výkonu účtu & živý order flow.")
 def load_trading_data():
   try:
     sheet_id = "1nyV3Xa0BNX-DVLkkbd-wshjuHzPcjOVw3jr6O3BjxCw"
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    csv_url = (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    )
     df = pd.read_csv(csv_url, skiprows=15)
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -72,7 +68,7 @@ def load_trading_data():
 
       if total_trades > 0:
         return total_pnl, win_rate
-  except Exception as e:
+  except Exception:
     pass
   return -37.77, 36.84
 
@@ -92,7 +88,9 @@ def fetch_okx_data():
         timeout=3,
     ).json()
     buy_vol = sum(
-        float(t["sz"]) for t in trades_res.get("data", []) if t["side"] == "buy"
+        float(t["sz"])
+        for t in trades_res.get("data", [])
+        if t["side"] == "buy"
     )
     sell_vol = sum(
         float(t["sz"])
@@ -202,7 +200,11 @@ st.markdown("### 📊 Trading Journal (OKX)")
 col1, col2 = st.columns(2)
 with col1:
   pnl_class = "negative" if total_pnl < 0 else "positive"
-  pnl_text = f"-${abs(total_pnl):,.2f} USD" if total_pnl < 0 else f"{total_pnl:,.2f} USD"
+  pnl_text = (
+      f"-${abs(total_pnl):,.2f} USD"
+      if total_pnl < 0
+      else f"{total_pnl:,.2f} USD"
+  )
   st.markdown(
       f"""
         <div class="global-card">
@@ -275,6 +277,24 @@ with tab_binance:
             </span>
         </div>
         """,
-      
+      unsafe_allow_html=True,
+  )
+
+with tab_hl:
+  hl_col = "positive" if hl_cvd >= 0 else "negative"
+  st.markdown(
+      f"""
+        <div class="global-card">
+            <div class="metric-title">Hyperliquid — BTC Perpetual</div>
+            <hr style="border-color: #30363d; margin: 10px 0;">
+            <span style="font-size: 14px;">
+            <b>CVD Delta:</b> <span class="{hl_col}">{hl_cvd:+.2f} BTC</span><br><br>
+            <b>Open Interest:</b> {hl_oi:,.2f} BTC
+            </span>
+        </div>
+        """,
+      unsafe_allow_html=True,
+  )
+
 
 
