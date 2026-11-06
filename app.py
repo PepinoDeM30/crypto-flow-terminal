@@ -14,20 +14,26 @@ st.markdown(
     .global-card {
         background-color: #161b22;
         border: 1px solid #30363d;
-        padding: 20px;
+        padding: 18px;
         border-radius: 12px;
-        margin-bottom: 15px;
+        margin-bottom: 12px;
     }
     .metric-title {
-        font-size: 13px;
+        font-size: 12px;
         color: #8b949e;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
     .metric-value {
-        font-size: 22px;
+        font-size: 20px;
         font-weight: bold;
-        color: #58a6ff;
+        margin-top: 5px;
+    }
+    .negative {
+      color: #f85149;
+    }
+    .neutral {
+      color: #e3b341;
     }
     </style>
 """,
@@ -35,19 +41,49 @@ st.markdown(
 )
 
 st.title("⚡ Global Crypto Flow")
-st.write("Agregovaný přehled order flow z OKX a Bybitu v reálném čase.")
+st.write("Přehled výkonu účtu & živý order flow.")
 
-# Jednotný hlavní globální panel optimalizovaný na výšku pro mobil
+# --- SEKCE 1: VÝKON ÚČTU Z GOOGLE SHEETS ---
+st.markdown("### 📊 Trading Journal (OKX)")
+
+col1, col2 = st.columns(2)
+
+with col1:
+  st.markdown(
+      """
+        <div class="global-card">
+            <div class="metric-title">Celkový výsledek (vč. fees)</div>
+            <div class="metric-value negative">-$37.77 USD</div>
+        </div>
+        """,
+      unsafe_allow_html=True,
+  )
+
+with col2:
+  st.markdown(
+      """
+        <div class="global-card">
+            <div class="metric-title">Win Rate</div>
+            <div class="metric-value neutral">36.84%</div>
+        </div>
+        """,
+      unsafe_allow_html=True,
+  )
+
+# --- SEKCE 2: HLAVNÍ GLOBÁLNÍ PANEL (OKX + BYBIT) ---
 st.markdown(
     """
     <div class="global-card">
-        <div class="metric-title">Sledovaný trh</div>
-        <div class="metric-value">BTC / USDT (Globální souhrn)</div>
-        <hr style="border-color: #30363d; margin: 15px 0;">
-        <b>Aggregated CVD:</b> <span style="color: #e3b341;">Čeká se na připojení...</span><br><br>
+        <div class="metric-title">Sledovaný trh (OKX + Bybit)</div>
+        <div class="metric-value" style="color: #58a6ff;">BTC / USDT (Globální souhrn)</div>
+        <hr style="border-color: #30363d; margin: 12px 0;">
+        <span style="font-size: 14px;">
+        <b>Aggregated CVD:</b> <span style="color: #e3b341;">Čeká se na data...</span><br><br>
         <b>Detekce akce:</b> <span style="color: #8b949e;">Sleduje se absorpce / exhaustion</span><br><br>
-        <b>Stav serveru:</b> <span style="color: #2ea043;">● Připraveno na data (OKX + Bybit)</span>
+        <b>Stav serveru:</b> <span style="color: #2ea043;">● Systém online (Připraveno)</span>
+        </span>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
