@@ -11,10 +11,10 @@ st.markdown("""
 .block-container { padding-top: 1rem !important; padding-bottom: 3rem !important; }
 .giant-header { text-align: center; margin-bottom: 30px; }
 .giant-btc-img { width: 100%; max-width: 320px; border-radius: 20px; box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4); margin-bottom: 20px; }
-.giant-title { font-size: 28px; font-weight: 900; letter-spacing: 2px; color: #f7931a; text-shadow: 0 2px 10px rgba(247,147,26,0.3); }
+.giant-title { font-size: 28px; font-weight: 900; letter-spacing: 2px; color: #f7931a; text-shadow: 0 2px 10px rgba(247,147,26,0.3); margin-left: 25px; }
 .matrix-card { background: linear-gradient(180deg, #0d131f 0%, #06080c 100%); border: 1px solid #1f2937; border-radius: 15px; padding: 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
 @keyframes giant-pulse { 0% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); } 15% { transform: scale(1.2); filter: drop-shadow(0 0 35px rgba(255, 50, 50, 0.9)); } 30% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); } 45% { transform: scale(1.15); filter: drop-shadow(0 0 25px rgba(255, 50, 50, 0.7)); } 60% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); } 100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); } }
-.giant-heart { width: 120px; height: auto; animation: giant-pulse 1.3s infinite ease-in-out; margin: 20px 0; }
+.giant-heart { width: 110px; height: auto; animation: giant-pulse 1.3s infinite ease-in-out; margin: 20px 0; }
 .money-journal { background: url('https://images.unsplash.com/photo-1611928482473-7b27d24eab80?q=80&w=800&auto=format&fit=crop') center/cover; border-radius: 15px; padding: 30px 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(39, 174, 96, 0.3); position: relative; overflow: hidden; }
 .money-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(4, 20, 10, 0.85); z-index: 1; }
 .money-content { position: relative; z-index: 2; }
@@ -125,7 +125,7 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 st.markdown(f"""
 <div class="matrix-card">
 <div style="color: #58a6ff; font-weight: 900; font-size: 18px; margin-bottom: 10px; letter-spacing: 2px;">OKX ORDER FLOW MATRIX</div>
-<img src="https://cdn.pixabay.com/photo/2017/02/09/16/59/heart-2052845_960_720.png" class="giant-heart">
+<img src="https://em-content.zobj.net/source/apple/391/red-heart_2764-fe0f.png" class="giant-heart">
 <div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 20px;">
 <div style="text-align: center;">
 <div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M CVD</div>
