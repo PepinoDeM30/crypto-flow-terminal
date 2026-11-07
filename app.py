@@ -7,217 +7,200 @@ st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide")
 
 st.markdown("""
     <style>
-    /* KYBERNETICKÉ POZADÍ S TECHNICKOU MŘÍŽKOU A ZLATOU ZÁŘÍ */
+    /* ČISTÉ, UKLIDŇUJÍCÍ DARK MINIMAL POZADÍ */
     .stApp {
-        background-color: #06090f;
+        background-color: #0b0f17;
         background-image: 
-            radial-gradient(circle at 50% 0%, rgba(247, 147, 26, 0.14) 0%, transparent 45%),
-            radial-gradient(circle at 85% 60%, rgba(88, 166, 255, 0.08) 0%, transparent 40%),
-            linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-        background-size: 100% 100%, 100% 100%, 28px 28px, 28px 28px;
-        color: #ffffff;
+            radial-gradient(circle at 50% 0%, rgba(247, 147, 26, 0.08) 0%, transparent 40%),
+            linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+        background-size: 100% 100%, 24px 24px;
+        color: #e6edf3;
     }
     header[data-testid="stHeader"] {
-        background: linear-gradient(90deg, #0b111a 0%, #162236 50%, #0b111a 100%) !important;
-        border-bottom: 1px solid #f7931a66 !important;
+        background: #0b0f17 !important;
+        border-bottom: 1px solid #21262d !important;
     }
     .block-container {
-        padding-top: 2.2rem !important;
+        padding-top: 2rem !important;
         padding-bottom: 3rem !important;
     }
 
-    /* 3D EFEKT PRO NADPISY A HLAVNÍ TEXTY */
-    .text-3d {
-        text-shadow: 0 1px 0 #cccccc, 0 2px 0 #c9c9c9, 0 3px 0 #bbbbbb, 0 4px 0 #b9b9b9, 
-                     0 5px 0 #aaaaaa, 0 6px 1px rgba(0,0,0,0.3), 0 0 5px rgba(0,0,0,0.5), 
-                     0 1px 3px rgba(0,0,0,0.5), 0 3px 5px rgba(0,0,0,0.4), 0 5px 10px rgba(0,0,0,0.4);
-    }
-    .title-3d {
-        font-size: 24px;
-        font-weight: 900;
-        letter-spacing: 1.5px;
-        background: linear-gradient(90deg, #ffffff 0%, #ffd700 55%, #f7931a 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        filter: drop-shadow(2px 3px 4px rgba(0,0,0,0.7));
+    /* ELEGANTNÍ MINIMALISTICKÉ NADPISY (ŽÁDNÉ RUŠIVÉ STÍNY) */
+    .clean-title {
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 1.2px;
+        color: #f0f6fc;
     }
 
-    /* HLAVNÍ HLAVIČKA S VÝRAZNÝM ZNAKEM BTC */
+    /* HLAVNÍ HLAVIČKA S SVG 3D BITCOIN MINCÍ */
     .crypto-header {
         display: flex;
         align-items: center;
-        justify-content: center;
-        gap: 14px;
-        background: linear-gradient(135deg, rgba(16, 23, 38, 0.95) 0%, rgba(28, 40, 64, 0.95) 50%, rgba(16, 23, 38, 0.95) 100%);
-        border: 1px solid #3d4c68;
-        border-bottom: 3px solid #f7931a;
+        gap: 16px;
+        background: #111622;
+        border: 1px solid #30363d;
+        border-left: 4px solid #f7931a;
         padding: 14px 18px;
-        border-radius: 14px;
-        margin-bottom: 14px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
-    }
-    .btc-badge {
-        background: radial-gradient(circle at 30% 30%, #ffe066 0%, #f7931a 55%, #b35900 100%);
-        color: #06090f;
-        font-weight: 900;
-        font-size: 27px;
-        width: 46px;
-        height: 46px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 0 20px rgba(247, 147, 26, 0.9), inset 0 2px 4px rgba(255,255,255,0.6);
-        border: 2px solid #fff5d6;
-        flex-shrink: 0;
+        border-radius: 10px;
+        margin-bottom: 16px;
     }
 
-    /* GLOBÁLNÍ KARTY A 3D PULZUJÍCÍ SRDCE */
+    /* GLOBÁLNÍ KARTY A PULZUJÍCÍ SVG SRDCE */
     .global-card {
-        background: rgba(16, 22, 33, 0.92);
-        border: 1px solid #2b384e;
+        background: #111622;
+        border: 1px solid #21262d;
         padding: 16px;
-        border-radius: 12px;
+        border-radius: 10px;
         margin-bottom: 14px;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.05);
     }
     @keyframes heartbeat {
-        0% { transform: scale(1); filter: drop-shadow(0 0 4px #ff4b4b); }
-        15% { transform: scale(1.35); filter: drop-shadow(0 0 12px #ff4b4b); }
-        30% { transform: scale(1); filter: drop-shadow(0 0 4px #ff4b4b); }
-        45% { transform: scale(1.25); filter: drop-shadow(0 0 10px #ff4b4b); }
-        60% { transform: scale(1); filter: drop-shadow(0 0 4px #ff4b4b); }
-        100% { transform: scale(1); filter: drop-shadow(0 0 4px #ff4b4b); }
+        0% { transform: scale(1); opacity: 0.85; }
+        15% { transform: scale(1.25); opacity: 1; filter: drop-shadow(0 0 8px rgba(255, 75, 75, 0.6)); }
+        30% { transform: scale(1); opacity: 0.85; }
+        45% { transform: scale(1.15); opacity: 0.95; }
+        60% { transform: scale(1); opacity: 0.85; }
+        100% { transform: scale(1); opacity: 0.85; }
     }
-    .beating-heart { display: inline-block; animation: heartbeat 1.4s infinite; font-size: 18px; margin-right: 6px; }
-    .live-pulse-text { font-size: 12px; color: #ff6b6b; font-weight: 700; letter-spacing: 0.8px; }
+    .svg-heart {
+        display: inline-block;
+        animation: heartbeat 1.5s infinite;
+        vertical-align: middle;
+    }
+    .live-pulse-text { font-size: 11px; color: #ff7b72; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; }
 
-    /* BANKOVKOVÝ DESIGN PRO TRADING JOURNAL (SMARAGDOVÁ ZÁŘ) */
+    /* BANKOVKOVÝ DESIGN PRO VÝSLEDKY S SVG HROMADOU PENĚZ */
     .banknote-card {
-        background: linear-gradient(135deg, rgba(11, 41, 26, 0.95) 0%, rgba(18, 61, 39, 0.95) 50%, rgba(11, 41, 26, 0.95) 100%);
-        border: 1px solid #2ecc71;
-        border-left: 5px solid #27ae60;
+        background: linear-gradient(135deg, #0d1f18 0%, #112a21 100%);
+        border: 1px solid #238636;
+        border-left: 4px solid #2ea043;
         padding: 16px;
-        border-radius: 12px;
+        border-radius: 10px;
         margin-bottom: 14px;
-        box-shadow: 0 6px 20px rgba(39, 174, 96, 0.25), inset 0 1px 0 rgba(255,255,255,0.1);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
     }
 
     /* KARTY SETUP 1 A SETUP 2 */
     .alert-box-setup1 {
-        background: rgba(18, 22, 32, 0.95);
-        border: 1px solid #455065;
-        border-left: 5px solid #f7931a;
-        padding: 16px 18px;
-        border-radius: 12px;
+        background: #111622;
+        border: 1px solid #30363d;
+        border-left: 4px solid #f7931a;
+        padding: 16px;
+        border-radius: 10px;
         margin-bottom: 16px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.4);
     }
     .alert-box-setup2 {
-        background: rgba(21, 18, 36, 0.95);
-        border: 1px solid #483766;
-        border-left: 5px solid #a371f7;
-        padding: 16px 18px;
-        border-radius: 12px;
+        background: #111622;
+        border: 1px solid #30363d;
+        border-left: 4px solid #a371f7;
+        padding: 16px;
+        border-radius: 10px;
         margin-bottom: 16px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.4);
     }
     .setup-main-title {
-        font-size: 20px;
-        font-weight: 900;
-        letter-spacing: 0.8px;
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: 0.6px;
         text-transform: uppercase;
         margin-bottom: 8px;
     }
     .setup-sub-text {
         font-size: 13.5px;
-        font-weight: 600;
+        font-weight: 500;
         line-height: 1.5;
+        color: #8b949e;
     }
 
-    /* STYLOVÁNÍ PŘEPÍNAČE SETUP 1 / SETUP 2 */
+    /* STYLOVÁNÍ PŘEPÍNAČE */
     div[role="radiogroup"] {
-        background: rgba(16, 22, 34, 0.9);
-        border: 1px solid #2e3b52;
+        background: #111622;
+        border: 1px solid #21262d;
         padding: 6px;
-        border-radius: 12px;
+        border-radius: 10px;
         display: flex;
         justify-content: space-around;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
     }
     div[role="radiogroup"] label {
-        font-weight: 800 !important;
-        font-size: 14px !important;
-        color: #ffffff !important;
+        font-weight: 700 !important;
+        font-size: 13px !important;
+        color: #c9d1d9 !important;
     }
 
-    /* BLIKAJÍCÍ ALARM PŘI DETEKCI SETUPU */
+    /* BLIKAJÍCÍ ALARM */
     .signal-triggered {
-        background-color: #2b1115 !important;
-        border: 2px solid #ff5555 !important;
-        animation: pulse-alert 1s infinite alternate;
+        background-color: #1f1113 !important;
+        border: 1px solid #f85149 !important;
+        animation: pulse-alert 1.2s infinite alternate;
     }
     @keyframes pulse-alert {
-        0% { box-shadow: 0 0 5px rgba(255, 85, 85, 0.4); }
-        100% { box-shadow: 0 0 24px rgba(255, 85, 85, 0.95); }
+        0% { box-shadow: 0 0 4px rgba(248, 81, 73, 0.3); }
+        100% { box-shadow: 0 0 16px rgba(248, 81, 73, 0.7); }
     }
 
     /* NADPISY SEKCÍ */
     .section-banner {
-        background: linear-gradient(90deg, rgba(22, 30, 46, 0.95) 0%, rgba(12, 16, 24, 0.95) 100%);
-        border-left: 4px solid #58a6ff;
-        border-top: 1px solid #283347;
-        border-right: 1px solid #283347;
-        border-bottom: 1px solid #283347;
-        padding: 10px 14px;
-        border-radius: 8px;
-        font-size: 19px;
-        font-weight: 800;
-        color: #ffffff;
-        letter-spacing: 0.6px;
-        margin: 16px 0 10px 0;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        font-size: 14px;
+        font-weight: 700;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin: 16px 0 8px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
 
     /* TLAČÍTKA DOLE */
     div.stButton > button {
         width: 100%;
-        background: linear-gradient(90deg, #141f33 0%, #1d2d4a 50%, #141f33 100%);
-        color: #ffd700 !important;
-        border: 1px solid #f7931a !important;
-        border-radius: 10px;
-        padding: 11px 14px;
-        font-size: 14px !important;
-        font-weight: 800 !important;
-        letter-spacing: 0.8px;
+        background: #161b22;
+        color: #f0f6fc !important;
+        border: 1px solid #30363d !important;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 13px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.6px;
         text-transform: uppercase;
-        box-shadow: 0 4px 14px rgba(247, 147, 26, 0.3);
         transition: all 0.2s ease;
     }
     div.stButton > button:hover {
-        background: linear-gradient(90deg, #f7931a 0%, #ffb700 100%);
-        color: #06090f !important;
-        box-shadow: 0 0 20px rgba(247, 147, 26, 0.8);
+        background: #1f242c;
+        border-color: #f7931a !important;
+        color: #f7931a !important;
     }
 
-    .metric-title { font-size: 12px; color: #9da7b3; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
-    .metric-value { font-size: 24px; font-weight: 900; margin-top: 4px; }
-    .negative { color: #ff5555; }
+    .metric-title { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; }
+    .metric-value { font-size: 22px; font-weight: 800; margin-top: 2px; }
+    .negative { color: #f85149; }
     .positive { color: #3fb950; }
-    .neutral { color: #ffd700; }
+    .neutral { color: #d29922; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. HLAVNÍ HLAVIČKA ---
+# --- 1. HLAVNÍ HLAVIČKA S 3D SVG BITCOIN MINCÍ ---
 st.markdown("""
     <div class="crypto-header">
-        <div class="btc-badge">₿</div>
-        <div class="title-3d">BTC ORDER FLOW</div>
+        <!-- SVG 3D Bitcoin Mince -->
+        <svg width="42" height="42" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="32" cy="32" r="30" fill="url(#btc_grad)" stroke="#fff5d6" stroke-width="2"/>
+            <path d="M39.5 27.2c.4-2.6-1.6-4-4.3-4.9l.9-3.6-2.2-.6-.9 3.5c-.6-.1-1.2-.3-1.8-.5l.9-3.5-2.2-.6-.9 3.6c-.5-.1-1-.2-1.5-.4l-3.2-.8-.6 2.5s1.7.4 1.7.4c1 .2 1.2.9 1.2 1.4l-1.2 4.8c.1 0 .2.1.3.1l-.3-.1-1.7 6.8c-.1.3-.4.8-1.2.6 0 0-1.7-.4-1.7-.4l-1.2 2.9 3 .8c.6.2 1.1.3 1.7.5l-.9 3.7 2.2.6.9-3.6c.6.2 1.2.3 1.8.5l-.9 3.7 2.2.6.9-3.7c3.7.7 6.5.4 7.7-3 1-2.8-.1-4.4-2-5.4 1.4-.3 2.5-1.2 2.8-3.1zm-5 7c-.7 2.8-5.4 1.3-6.9.9l1.2-5c1.6.4 6.4 1.2 5.7 4.1zm.7-7.1c-.6 2.5-4.5 1.2-5.8.9l1.1-4.4c1.3.3 5.4 1 4.7 3.5z" fill="#0b0f17"/>
+            <defs>
+                <radialGradient id="btc_grad" cx="30%" cy="30%" r="75%">
+                    <stop offset="0%" stop-color="#ffdf7e"/>
+                    <stop offset="50%" stop-color="#f7931a"/>
+                    <stop offset="100%" stop-color="#b35900"/>
+                </radialGradient>
+            </defs>
+        </svg>
+        <div class="clean-title">BTC ORDER FLOW</div>
     </div>
 """, unsafe_allow_html=True)
 
-# --- 2. GOOGLE SHEETS (NAČTENÍ PŘESNĚ Z ŘÁDKU 18 / SLOUPCE C A G) ---
+# --- 2. GOOGLE SHEETS (NAČTENÍ Z ŘÁDKU 18 / SLOUPEC C A G) ---
 @st.cache_data(ttl=30)
 def load_trading_data():
     try:
@@ -225,10 +208,7 @@ def load_trading_data():
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df = pd.read_csv(csv_url, header=None)
         
-        # Řádek 18 v tabulce (index 17 v Pythonu) obsahuje souhrn
-        # Sloupec C (index 2) je celkový PnL, Sloupec G (index 6) je Win Rate
-        row_summary = df.iloc[17]
-        
+        row_summary = df.iloc[17] # Řádek 18 v tabulce
         pnl_raw = str(row_summary.iloc[2]).replace(" ", "").replace(",", ".")
         total_pnl = float(pnl_raw) if pnl_raw not in ["nan", "0", "0.0"] else -41.03
         
@@ -240,7 +220,7 @@ def load_trading_data():
         pass
     return -41.03, 38.10
 
-# --- 3. ŽIVÁ DATA Z OKX (AŽ 96 SVÍČEK PRO 8H SFP + CVD HISTORIE) ---
+# --- 3. ŽIVÁ DATA Z OKX ---
 def fetch_okx_data():
     ts = int(time.time() * 1000)
     cvd_5m = 0.0
@@ -279,7 +259,7 @@ def fetch_okx_data():
     except Exception:
         return 0.0, 0.0, [], [], []
 
-# --- 4. SETUP 1: DYNAMICKÝ RANGE 3–12 SVÍČEK (0.25% TĚLA + ±200 BTC CVD) ---
+# --- 4. SKENERY ---
 def scan_setup_1(candles_96, cvd_series_12):
     try:
         if len(candles_96) < 12 or len(cvd_series_12) < 12:
@@ -293,10 +273,8 @@ def scan_setup_1(candles_96, cvd_series_12):
         for length in range(3, 13):
             sub_candles = candles_12[-length:]
             sub_cvd = cvd_series_12[-length:]
-
             body_highs = [max(float(k[1]), float(k[4])) for k in sub_candles]
             body_lows = [min(float(k[1]), float(k[4])) for k in sub_candles]
-
             highest_body = max(body_highs)
             lowest_body = min(body_lows)
 
@@ -304,22 +282,13 @@ def scan_setup_1(candles_96, cvd_series_12):
                 continue
 
             body_range_pct = ((highest_body - lowest_body) / lowest_body) * 100
-
             if body_range_pct <= max_body_range_pct:
                 cum_cvd = sum(sub_cvd)
                 if best_valid_window is None or abs(cum_cvd) > abs(best_valid_window["cum_cvd"]):
-                    best_valid_window = {
-                        "length": length,
-                        "range_pct": body_range_pct,
-                        "cum_cvd": cum_cvd
-                    }
+                    best_valid_window = {"length": length, "range_pct": body_range_pct, "cum_cvd": cum_cvd}
 
         if best_valid_window is None:
-            c3 = candles_12[-3:]
-            bh3 = max(max(float(k[1]), float(k[4])) for k in c3)
-            bl3 = min(min(float(k[1]), float(k[4])) for k in c3)
-            r3_pct = ((bh3 - bl3) / bl3) * 100 if bl3 > 0 else 0.0
-            return (f"Trh trenduje mimo 0,25% zámek. (Rozpětí těl 3 svíček: {r3_pct:.2f} %)."), "neutral", False
+            return "Trh trenduje mimo 0,25% zámek.", "neutral", False
 
         w_len = best_valid_window["length"]
         w_rng = best_valid_window["range_pct"]
@@ -328,18 +297,12 @@ def scan_setup_1(candles_96, cvd_series_12):
         if abs(w_cvd) >= target_cum_cvd:
             direction = "BEARISH" if w_cvd > 0 else "BULLISH"
             col = "negative" if direction == "BEARISH" else "positive"
-            action = "Agresivní kupci pohlceni v rangi!" if direction == "BEARISH" else "Agresivní prodejci pohlceni v rangi!"
-            return (f"🔥 SETUP 1 PLATNÝ ({direction})! "
-                    f"Aktivní range: {w_len} svíček ({w_len*5} min), těla: {w_rng:.2f} %. "
-                    f"Čisté kumulativní CVD v rangi: {w_cvd:+.1f} BTC! {action}"), col, True
+            return f"🔥 SETUP 1 PLATNÝ ({direction})! Range: {w_len} svíček, CVD: {w_cvd:+.1f} BTC.", col, True
 
-        return (f"Aktivní range nalezen: {w_len} svíček ({w_len*5} min) v zámku {w_rng:.2f} % (těla). "
-                f"Kumulativní CVD: {w_cvd:+.1f} BTC (Cíl: ±{target_cum_cvd:.0f} BTC)."), "neutral", False
-
+        return f"Aktivní range: {w_len} svíček v zámku {w_rng:.2f} %. Kumulativní CVD: {w_cvd:+.1f} BTC.", "neutral", False
     except Exception:
-        return "Skener Setupu 1 momentálně zpracovává data...", "neutral", False
+        return "Skener zpracovává data...", "neutral", False
 
-# --- 5. SETUP 2: 4H–8H SFP & VÝPLACH OI (-70 BTC) ---
 def scan_setup_2(candles_96, current_oi_change_btc):
     try:
         if len(candles_96) < 96:
@@ -353,33 +316,28 @@ def scan_setup_2(candles_96, current_oi_change_btc):
         history_4h_8h = candles_96[48:96]
         swing_high_8h = max(float(k[2]) for k in history_4h_8h)
         swing_low_8h = min(float(k[3]) for k in history_4h_8h)
-        
         oi_drop_threshold = -70.0
 
         if curr_low < swing_low_8h and curr_close > swing_low_8h:
             if current_oi_change_btc <= oi_drop_threshold:
-                return f"🔥 BULLISH SFP POTVRZEN! Vybráno 4H-8H Low ({swing_low_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "positive", True
-            else:
-                return f"Pozor: 4H-8H Low ({swing_low_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+                return f"🔥 BULLISH SFP! Vybráno Low ({swing_low_8h:.0f} USD) + OI propad o {current_oi_change_btc:.1f} BTC.", "positive", True
+            return f"Pozor: 4H-8H Low vybráno, chybí výplach OI ({current_oi_change_btc:+.1f} BTC).", "neutral", False
 
         if curr_high > swing_high_8h and curr_close < swing_high_8h:
             if current_oi_change_btc <= oi_drop_threshold:
-                return f"🔥 BEARISH SFP POTVRZEN! Vybráno 4H-8H High ({swing_high_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "negative", True
-            else:
-                return f"Pozor: 4H-8H High ({swing_high_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+                return f"🔥 BEARISH SFP! Vybráno High ({swing_high_8h:.0f} USD) + OI propad o {current_oi_change_btc:.1f} BTC.", "negative", True
+            return f"Pozor: 4H-8H High vybráno, chybí výplach OI ({current_oi_change_btc:+.1f} BTC).", "neutral", False
 
-        return f"Cena v bezpečném pásmu (4H-8H Low: {swing_low_8h:.0f} | High: {swing_high_8h:.0f} USD). Žádný sweep.", "neutral", False
+        return "Cena v bezpečném pásmu. Žádný sweep.", "neutral", False
     except Exception:
-        return "Skener Setupu 2 momentálně načítá data...", "neutral", False
+        return "Skener zpracovává data...", "neutral", False
 
-# --- NAČTENÍ DAT A SPUŠTĚNÍ SKENERŮ ---
 total_pnl, win_rate = load_trading_data()
 okx_cvd, okx_oi_chg, cvd_series_12, oi_series_3, candles_96 = fetch_okx_data()
 
 setup1_msg, setup1_col, alert1_triggered = scan_setup_1(candles_96, cvd_series_12)
 setup2_msg, setup2_col, alert2_triggered = scan_setup_2(candles_96, okx_oi_chg)
 
-# JEDNORÁZOVÝ ZVUKOVÝ ALARM PŘI AKTIVACI
 if alert1_triggered or alert2_triggered:
     st.markdown("""
         <audio autoplay>
@@ -387,7 +345,7 @@ if alert1_triggered or alert2_triggered:
         </audio>
     """, unsafe_allow_html=True)
 
-# --- SPOJENÝ TRŽNÍ PANEL: OKX ORDER FLOW MATRIX (5M + POSLEDNÍ 3 SVÍČKY CVD & OI) ---
+# --- OKX ORDER FLOW MATRIX S PULZUJÍCÍM SVG SRDCEM ---
 cvd_col = "positive" if okx_cvd >= 0 else "negative"
 oi_col = "positive" if okx_oi_chg >= 0 else "negative"
 
@@ -395,31 +353,36 @@ c1, c2, c3 = (cvd_series_12[-3], cvd_series_12[-2], cvd_series_12[-1]) if len(cv
 oi1, oi2, oi3 = (oi_series_3[0], oi_series_3[1], oi_series_3[2]) if len(oi_series_3) >= 3 else (0, 0, 0)
 
 st.markdown(f"""
-    <div class="global-card" style="border: 1px solid #388bfd;">
+    <div class="global-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div class="metric-title text-3d" style="color: #58a6ff; font-size: 15px;">🌐 OKX ORDER FLOW MATRIX</div>
-            <div><span class="beating-heart">❤️</span><span class="live-pulse-text">TRH ŽIJE</span></div>
+            <div style="font-size: 13px; font-weight: 700; color: #58a6ff; letter-spacing: 0.8px;">OKX ORDER FLOW MATRIX</div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <svg class="svg-heart" width="16" height="16" viewBox="0 0 24 24" fill="#ff7b72" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+                <span class="live-pulse-text">TRH ŽIJE</span>
+            </div>
         </div>
         <div style="display: flex; justify-content: space-between; margin-top: 14px;">
             <div>
-                <div style="font-size: 11px; color: #8b949e; font-weight: 700;">AKTUÁLNÍ 5M CVD</div>
-                <div class="metric-value {cvd_col} text-3d">{okx_cvd:+,.2f} BTC</div>
+                <div class="metric-title">AKTUÁLNÍ 5M CVD</div>
+                <div class="metric-value {cvd_col}">{okx_cvd:+,.2f} BTC</div>
             </div>
             <div>
-                <div style="font-size: 11px; color: #8b949e; font-weight: 700;">AKTUÁLNÍ 5M OI</div>
-                <div class="metric-value {oi_col} text-3d">{okx_oi_chg:+,.2f} BTC</div>
+                <div class="metric-title">AKTUÁLNÍ 5M OI</div>
+                <div class="metric-value {oi_col}">{okx_oi_chg:+,.2f} BTC</div>
             </div>
         </div>
-        <hr style="border-color: #2b384e; margin: 12px 0;">
-        <div style="font-size: 11px; color: #8b949e; font-weight: 700; margin-bottom: 6px;">HISTORIE POSLEDNÍCH 3 SVÍČEK (15 MIN)</div>
-        <div style="display: flex; justify-content: space-between; font-size: 13px;">
-            <div><b>CVD:</b> <span class="{'positive' if c1 >= 0 else 'negative'}">{c1:+.1f}</span> | <span class="{'positive' if c2 >= 0 else 'negative'}">{c2:+.1f}</span> | <span class="{'positive' if c3 >= 0 else 'negative'}">{c3:+.1f} BTC</span></div>
-            <div><b>OI:</b> <span class="{'positive' if oi1 >= 0 else 'negative'}">{oi1:+.1f}</span> | <span class="{'positive' if oi2 >= 0 else 'negative'}">{oi2:+.1f}</span> | <span class="{'positive' if oi3 >= 0 else 'negative'}">{oi3:+.1f} BTC</span></div>
+        <hr style="border-color: #21262d; margin: 12px 0;">
+        <div class="metric-title" style="margin-bottom: 6px;">HISTORIE POSLEDNÍCH 3 SVÍČEK (15 MIN)</div>
+        <div style="display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600;">
+            <div>CVD: <span class="{'positive' if c1 >= 0 else 'negative'}">{c1:+.1f}</span> | <span class="{'positive' if c2 >= 0 else 'negative'}">{c2:+.1f}</span> | <span class="{'positive' if c3 >= 0 else 'negative'}">{c3:+.1f} BTC</span></div>
+            <div>OI: <span class="{'positive' if oi1 >= 0 else 'negative'}">{oi1:+.1f}</span> | <span class="{'positive' if oi2 >= 0 else 'negative'}">{oi2:+.1f}</span> | <span class="{'positive' if oi3 >= 0 else 'negative'}">{oi3:+.1f} BTC</span></div>
         </div>
     </div>
 """, unsafe_allow_html=True)
 
-# --- PŘEPÍNÁNÍ SETUP 1 A SETUP 2 PŘES TLAČÍTKO ---
+# --- PŘEPÍNAČ SETUPŮ ---
 s1_badge = "🔴 ALARM!" if alert1_triggered else "⚡ Setup 1: Absorpce"
 s2_badge = "🔴 ALARM!" if alert2_triggered else "🎯 Setup 2: 4H-8H SFP"
 
@@ -434,7 +397,7 @@ if selected_setup == s1_badge:
     box_class_1 = "alert-box-setup1 signal-triggered" if alert1_triggered else "alert-box-setup1"
     st.markdown(f"""
         <div class="{box_class_1}">
-            <div class="setup-main-title text-3d" style="color: #f7931a;">⚡ SETUP 1: KUMULATIVNÍ ABSORPCE (3–12 SVÍČEK)</div>
+            <div class="setup-main-title" style="color: #f7931a;">⚡ SETUP 1: KUMULATIVNÍ ABSORPCE (3–12 SVÍČEK)</div>
             <div class="setup-sub-text {setup1_col}">{setup1_msg}</div>
         </div>
     """, unsafe_allow_html=True)
@@ -442,33 +405,46 @@ else:
     box_class_2 = "alert-box-setup2 signal-triggered" if alert2_triggered else "alert-box-setup2"
     st.markdown(f"""
         <div class="{box_class_2}">
-            <div class="setup-main-title text-3d" style="color: #a371f7;">🎯 SETUP 2: SFP & OI OTOČKA (4H–8H SWEEP)</div>
+            <div class="setup-main-title" style="color: #a371f7;">🎯 SETUP 2: SFP & OI OTOČKA (4H–8H SWEEP)</div>
             <div class="setup-sub-text {setup2_col}">{setup2_msg}</div>
         </div>
     """, unsafe_allow_html=True)
 
-# --- TRADING JOURNAL (BANKOVKOVÝ DESIGN S 3D EFEKTEM ZE SOUHRNU ŘÁDKU 18) ---
-st.markdown('<div class="section-banner text-3d">📊 TRADING JOURNAL (OKX)</div>', unsafe_allow_html=True)
-col1, col2 = st.columns(2)
+# --- TRADING JOURNAL S SVG GRAFIKOU BANKOVEK (BEZ TEXTOVÉHO NADPISU) ---
 pnl_class = "negative" if total_pnl < 0 else "positive"
 pnl_text = f"-${abs(total_pnl):,.2f} USD" if total_pnl < 0 else f"+${total_pnl:,.2f} USD"
+
+col1, col2 = st.columns(2)
 
 with col1:
     st.markdown(f'''
         <div class="banknote-card">
-            <div class="metric-title" style="color: #a3e4d7;">CELKOVÝ VÝSLEDEK</div>
-            <div class="metric-value {pnl_class} text-3d">{pnl_text}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-with col2:
-    st.markdown(f'''
-        <div class="banknote-card">
-            <div class="metric-title" style="color: #a3e4d7;">WIN RATE</div>
-            <div class="metric-value neutral text-3d">{win_rate:.2f} %</div>
+            <div>
+                <div class="metric-title" style="color: #7ee787;">CELKOVÝ VÝSLEDEK</div>
+                <div class="metric-value {pnl_class}">{pnl_text}</div>
+            </div>
+            <!-- SVG Bankovka / Peníze -->
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M21 4H3C1.9 4 1 4.9 1 6V18C1 19.1 1.9 20 3 20H21C22.1 20 23 19.1 23 18V6C23 4.9 22.1 4 21 4ZM21 18H3V6H21V18ZM12 8C9.79 8 8 9.79 8 12C8 14.21 9.79 16 12 16C14.21 16 16 14.21 16 12C16 9.79 14.21 8 12 8ZM12 14.5C10.62 14.5 9.5 13.38 9.5 12C9.5 10.62 10.62 9.5 12 9.5C13.38 9.5 14.5 10.62 14.5 12C14.5 13.38 13.38 14.5 12 14.5Z" fill="#2ea043"/>
+            </svg>
         </div>
     ''', unsafe_allow_html=True)
 
-# --- OVLÁDACÍ PRVKY ÚPLNĚ DOLE POD VŠÍM ---
+with col2:
+    st.markdown(f'''
+        <div class="banknote-card" style="border-left-color: #d29922; border-color: #9e6a03;">
+            <div>
+                <div class="metric-title" style="color: #e3b341;">WIN RATE</div>
+                <div class="metric-value neutral">{win_rate:.2f} %</div>
+            </div>
+            <!-- SVG Úspěch / Graf -->
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M16 6L18.29 8.29L13.41 13.17L9.41 9.17L2 16.59L3.41 18L9.41 12L13.41 16L19.71 9.71L22 12V6H16Z" fill="#d29922"/>
+            </svg>
+        </div>
+    ''', unsafe_allow_html=True)
+
+# --- OVLÁDACÍ PRVKY ÚPLNĚ DOLE ---
 st.markdown("<br>", unsafe_allow_html=True)
 col_bot1, col_bot2 = st.columns([3, 2])
 with col_bot1:
@@ -477,7 +453,6 @@ with col_bot1:
 with col_bot2:
     auto_refresh = st.toggle("⏱️ Auto (20s)", value=False)
 
-# AUTOMATICKÁ OBNOVA KAŽDÝCH 20 SEKUND (POKUD JE ZAPNUTÝ PŘEPÍNAČ)
 if auto_refresh:
     time.sleep(20)
     st.rerun()
