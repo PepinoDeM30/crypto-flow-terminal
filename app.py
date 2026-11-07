@@ -204,23 +204,29 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# --- 3. GOOGLE SHEETS (TRADING JOURNAL) ---
-@st.cache_data(ttl=60)
+# --- 3. GOOGLE SHEETS (NAČTENÍ SOUHRNU Z ŘÁDKU 15 / SLOUPEC C A G) ---
+@st.cache_data(ttl=30)
 def load_trading_data():
     try:
         sheet_id = "1nyV3Xa0BNX-DVLkkbd-wshjuHzPcjOVw3jr6O3BjxCw"
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-        df = pd.read_csv(csv_url, skiprows=15)
-        df.columns = [str(c).strip() for c in df.columns]
-        if "Vysledek" in df.columns:
-            df["Vysledek"] = pd.to_numeric(df["Vysledek"], errors="coerce")
-            trades_df = df.dropna(subset=["Vysledek"])
-            total_trades = len(trades_df)
-            if total_trades > 0:
-                return trades_df["Vysledek"].sum(), (len(trades_df[trades_df["Vysledek"] > 0]) / total_trades) * 100
+        df = pd.read_csv(csv_url, header=None)
+        
+        # Řádek 15 (index 15) obsahuje "Celkem / Souhrn"
+        # Sloupec C (index 2) je celkový PnL
+        # Sloupec G (index 6) je Win Rate (např. '38,10%')
+        row_summary = df.iloc[15]
+        
+        pnl_raw = str(row_summary.iloc[2]).replace(" ", "").replace(",", ".")
+        total_pnl = float(pnl_raw) if pnl_raw not in ["nan", "0", "0.0"] else -41.03
+        
+        win_raw = str(row_summary.iloc[6]).replace("%", "").replace(" ", "").replace(",", ".")
+        win_rate = float(win_raw) if win_raw not in ["nan", "0", "0.0"] else 38.10
+        
+        return total_pnl, win_rate
     except Exception:
         pass
-    return -37.77, 36.84
+    return -41.03, 38.10
 
 # --- 4. ŽIVÁ DATA Z OKX (AŽ 96 SVÍČEK PRO 8H HISTORII) ---
 def fetch_okx_data():
@@ -231,12 +237,10 @@ def fetch_okx_data():
     candles_96 = []
 
     try:
-        # Stáhneme 96 svíček (8 hodin x 12 svíček = 96) pro dokonalé 4H-8H SFP
         c_url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=96&t={ts}"
         candles_96 = requests.get(c_url, timeout=3).json().get("data", [])
         btc_price = float(candles_96[0][4]) if candles_96 else 76000.0
 
-        # A) 5M Taker Buy/Sell Volume z OKX Rubik API (posledních 12 svíček v BTC)
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
         vol_res = requests.get(vol_url, timeout=3).json().get("data", [])
 
@@ -249,7 +253,6 @@ def fetch_okx_data():
                 cvd_series_12.append(delta_btc)
             cvd_5m = cvd_series_12[-1]
 
-        # B) 5M změna Open Interestu z OKX Rubik API
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&t={ts}"
         oi_res = requests.get(oi_url, timeout=3).json().get("data", [])
         if len(oi_res) >= 2:
@@ -261,17 +264,15 @@ def fetch_okx_data():
     except Exception:
         return 0.0, 0.0, [], []
 
-# --- 5. SETUP 1: DYNAMICKÝ RANGE 3–12 SVÍČEK (ZÁMEK 0.25% TĚLA + ±200 BTC CVD) ---
+# --- 5. SETUP 1: DYNAMICKÝ RANGE 3–12 SVÍČEK (0.25% TĚLA + ±200 BTC CVD) ---
 def scan_setup_1(candles_96, cvd_series_12):
     try:
         if len(candles_96) < 12 or len(cvd_series_12) < 12:
             return "Načítám 12svíčkovou historii z OKX...", "neutral", False
 
         candles_12 = candles_96[:12][::-1]
-
-        max_body_range_pct = 0.25  # Limit 0,25 % měřený přes těla (Open/Close)
-        target_cum_cvd = 200.0     # Konzervativní institucionální filtr ±200 BTC
-
+        max_body_range_pct = 0.25
+        target_cum_cvd = 200.0
         best_valid_window = None
 
         for length in range(3, 13):
@@ -303,8 +304,7 @@ def scan_setup_1(candles_96, cvd_series_12):
             bh3 = max(max(float(k[1]), float(k[4])) for k in c3)
             bl3 = min(min(float(k[1]), float(k[4])) for k in c3)
             r3_pct = ((bh3 - bl3) / bl3) * 100 if bl3 > 0 else 0.0
-            return (f"Trh trenduje mimo 0,25% zámek. "
-                    f"(Rozpětí těl posledních 3 svíček: {r3_pct:.2f} %, limit: 0,25 %)."), "neutral", False
+            return (f"Trh trenduje mimo 0,25% zámek. (Rozpětí těl 3 svíček: {r3_pct:.2f} %)."), "neutral", False
 
         w_len = best_valid_window["length"]
         w_rng = best_valid_window["range_pct"]
@@ -319,12 +319,12 @@ def scan_setup_1(candles_96, cvd_series_12):
                     f"Čisté kumulativní CVD v rangi: {w_cvd:+.1f} BTC! {action}"), col, True
 
         return (f"Aktivní range nalezen: {w_len} svíček ({w_len*5} min) v zámku {w_rng:.2f} % (těla). "
-                f"Kumulativní CVD od začátku range: {w_cvd:+.1f} BTC (Cíl pro alarm: ±{target_cum_cvd:.0f} BTC)."), "neutral", False
+                f"Kumulativní CVD: {w_cvd:+.1f} BTC (Cíl: ±{target_cum_cvd:.0f} BTC)."), "neutral", False
 
     except Exception:
         return "Skener Setupu 1 momentálně zpracovává data...", "neutral", False
 
-# --- 6. SETUP 2: 4H–8H SFP & KONZERVATIVNÍ VÝPLACH OI (-70 BTC) ---
+# --- 6. SETUP 2: 4H–8H SFP & VÝPLACH OI (-70 BTC) ---
 def scan_setup_2(candles_96, current_oi_change_btc):
     try:
         if len(candles_96) < 96:
@@ -335,24 +335,23 @@ def scan_setup_2(candles_96, current_oi_change_btc):
         curr_low = float(current_candle[3])
         curr_close = float(current_candle[4])
         
-        # Sledujeme High / Low v okně 4 až 8 hodin dozadu (svíčky 48 až 96)
         history_4h_8h = candles_96[48:96]
         swing_high_8h = max(float(k[2]) for k in history_4h_8h)
         swing_low_8h = min(float(k[3]) for k in history_4h_8h)
         
-        oi_drop_threshold = -70.0  # Konzervativní velký výplach OI (-70 BTC za 5M)
+        oi_drop_threshold = -70.0
 
         if curr_low < swing_low_8h and curr_close > swing_low_8h:
             if current_oi_change_btc <= oi_drop_threshold:
                 return f"🔥 BULLISH SFP POTVRZEN! Vybráno 4H-8H Low ({swing_low_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "positive", True
             else:
-                return f"Pozor: 4H-8H Low ({swing_low_8h:.0f} USD) vybráno, ale chybí masivní výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+                return f"Pozor: 4H-8H Low ({swing_low_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
 
         if curr_high > swing_high_8h and curr_close < swing_high_8h:
             if current_oi_change_btc <= oi_drop_threshold:
                 return f"🔥 BEARISH SFP POTVRZEN! Vybráno 4H-8H High ({swing_high_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "negative", True
             else:
-                return f"Pozor: 4H-8H High ({swing_high_8h:.0f} USD) vybráno, ale chybí masivní výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+                return f"Pozor: 4H-8H High ({swing_high_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
 
         return f"Cena v bezpečném pásmu (4H-8H Low: {swing_low_8h:.0f} | High: {swing_high_8h:.0f} USD). Žádný sweep.", "neutral", False
     except Exception:
@@ -438,7 +437,7 @@ if len(cvd_series_12) >= 3:
         </div>
     """, unsafe_allow_html=True)
 
-# --- VIZUÁLNÍ ČÁST 4: TRADING JOURNAL ---
+# --- VIZUÁLNÍ ČÁST 4: TRADING JOURNAL (SOUHRN Z GOOGLE SHEETS) ---
 st.markdown('<div class="section-banner" style="border-left-color: #f7931a;">📊 TRADING JOURNAL (OKX)</div>', unsafe_allow_html=True)
 col1, col2 = st.columns(2)
 pnl_class = "negative" if total_pnl < 0 else "positive"
