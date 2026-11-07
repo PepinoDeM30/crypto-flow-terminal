@@ -25,7 +25,6 @@ st.markdown("""
         padding-bottom: 3rem !important;
     }
 
-    /* ELEGANTNÍ MINIMALISTICKÉ NADPISY (ŽÁDNÉ RUŠIVÉ STÍNY) */
     .clean-title {
         font-size: 22px;
         font-weight: 800;
@@ -33,7 +32,7 @@ st.markdown("""
         color: #f0f6fc;
     }
 
-    /* HLAVNÍ HLAVIČKA S SVG 3D BITCOIN MINCÍ */
+    /* HLAVNÍ HLAVIČKA S 3D ZLATOU BITCOIN MINCÍ */
     .crypto-header {
         display: flex;
         align-items: center;
@@ -46,30 +45,29 @@ st.markdown("""
         margin-bottom: 16px;
     }
 
-    /* GLOBÁLNÍ KARTY A PULZUJÍCÍ SVG SRDCE */
+    /* GLOBÁLNÍ KARTY A VELKÉ PULZUJÍCÍ SRDCE */
     .global-card {
         background: #111622;
         border: 1px solid #21262d;
-        padding: 16px;
+        padding: 18px;
         border-radius: 10px;
         margin-bottom: 14px;
     }
-    @keyframes heartbeat {
-        0% { transform: scale(1); opacity: 0.85; }
-        15% { transform: scale(1.25); opacity: 1; filter: drop-shadow(0 0 8px rgba(255, 75, 75, 0.6)); }
-        30% { transform: scale(1); opacity: 0.85; }
-        45% { transform: scale(1.15); opacity: 0.95; }
-        60% { transform: scale(1); opacity: 0.85; }
-        100% { transform: scale(1); opacity: 0.85; }
+    @keyframes heartbeat-big {
+        0% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255, 75, 75, 0.4)); }
+        15% { transform: scale(1.3); filter: drop-shadow(0 0 16px rgba(255, 75, 75, 0.8)); }
+        30% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255, 75, 75, 0.4)); }
+        45% { transform: scale(1.18); filter: drop-shadow(0 0 12px rgba(255, 75, 75, 0.6)); }
+        60% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255, 75, 75, 0.4)); }
+        100% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(255, 75, 75, 0.4)); }
     }
-    .svg-heart {
+    .svg-heart-container {
         display: inline-block;
-        animation: heartbeat 1.5s infinite;
-        vertical-align: middle;
+        animation: heartbeat-big 1.4s infinite;
     }
     .live-pulse-text { font-size: 11px; color: #ff7b72; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; }
 
-    /* BANKOVKOVÝ DESIGN PRO VÝSLEDKY S SVG HROMADOU PENĚZ */
+    /* BANKOVKOVÁ KARTA S REÁLNÝM VIZUÁLEM PENĚZ */
     .banknote-card {
         background: linear-gradient(135deg, #0d1f18 0%, #112a21 100%);
         border: 1px solid #238636;
@@ -113,7 +111,7 @@ st.markdown("""
         color: #8b949e;
     }
 
-    /* STYLOVÁNÍ PŘEPÍNAČE */
+    /* PŘEPÍNAČ */
     div[role="radiogroup"] {
         background: #111622;
         border: 1px solid #21262d;
@@ -129,7 +127,6 @@ st.markdown("""
         color: #c9d1d9 !important;
     }
 
-    /* BLIKAJÍCÍ ALARM */
     .signal-triggered {
         background-color: #1f1113 !important;
         border: 1px solid #f85149 !important;
@@ -138,19 +135,6 @@ st.markdown("""
     @keyframes pulse-alert {
         0% { box-shadow: 0 0 4px rgba(248, 81, 73, 0.3); }
         100% { box-shadow: 0 0 16px rgba(248, 81, 73, 0.7); }
-    }
-
-    /* NADPISY SEKCÍ */
-    .section-banner {
-        font-size: 14px;
-        font-weight: 700;
-        color: #8b949e;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin: 16px 0 8px 0;
-        display: flex;
-        align-items: center;
-        gap: 8px;
     }
 
     /* TLAČÍTKA DOLE */
@@ -181,21 +165,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. HLAVNÍ HLAVIČKA S 3D SVG BITCOIN MINCÍ ---
+# --- 1. HLAVNÍ HLAVIČKA S 3D ZLATOU BITCOIN MINCÍ (REÁLNÝ RENDER JAKO Z TVÉHO OBRÁZKU) ---
 st.markdown("""
     <div class="crypto-header">
-        <!-- SVG 3D Bitcoin Mince -->
-        <svg width="42" height="42" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="32" cy="32" r="30" fill="url(#btc_grad)" stroke="#fff5d6" stroke-width="2"/>
-            <path d="M39.5 27.2c.4-2.6-1.6-4-4.3-4.9l.9-3.6-2.2-.6-.9 3.5c-.6-.1-1.2-.3-1.8-.5l.9-3.5-2.2-.6-.9 3.6c-.5-.1-1-.2-1.5-.4l-3.2-.8-.6 2.5s1.7.4 1.7.4c1 .2 1.2.9 1.2 1.4l-1.2 4.8c.1 0 .2.1.3.1l-.3-.1-1.7 6.8c-.1.3-.4.8-1.2.6 0 0-1.7-.4-1.7-.4l-1.2 2.9 3 .8c.6.2 1.1.3 1.7.5l-.9 3.7 2.2.6.9-3.6c.6.2 1.2.3 1.8.5l-.9 3.7 2.2.6.9-3.7c3.7.7 6.5.4 7.7-3 1-2.8-.1-4.4-2-5.4 1.4-.3 2.5-1.2 2.8-3.1zm-5 7c-.7 2.8-5.4 1.3-6.9.9l1.2-5c1.6.4 6.4 1.2 5.7 4.1zm.7-7.1c-.6 2.5-4.5 1.2-5.8.9l1.1-4.4c1.3.3 5.4 1 4.7 3.5z" fill="#0b0f17"/>
-            <defs>
-                <radialGradient id="btc_grad" cx="30%" cy="30%" r="75%">
-                    <stop offset="0%" stop-color="#ffdf7e"/>
-                    <stop offset="50%" stop-color="#f7931a"/>
-                    <stop offset="100%" stop-color="#b35900"/>
-                </radialGradient>
-            </defs>
-        </svg>
+        <img src="https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=120&auto=format&fit=crop&q=80" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid #f7931a; box-shadow: 0 0 12px rgba(247,147,26,0.4);">
         <div class="clean-title">BTC ORDER FLOW</div>
     </div>
 """, unsafe_allow_html=True)
@@ -345,7 +318,7 @@ if alert1_triggered or alert2_triggered:
         </audio>
     """, unsafe_allow_html=True)
 
-# --- OKX ORDER FLOW MATRIX S PULZUJÍCÍM SVG SRDCEM ---
+# --- OKX ORDER FLOW MATRIX S VELKÝM PULZUJÍCÍM SVG SRDCEM UVNITŘ ---
 cvd_col = "positive" if okx_cvd >= 0 else "negative"
 oi_col = "positive" if okx_oi_chg >= 0 else "negative"
 
@@ -356,10 +329,12 @@ st.markdown(f"""
     <div class="global-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div style="font-size: 13px; font-weight: 700; color: #58a6ff; letter-spacing: 0.8px;">OKX ORDER FLOW MATRIX</div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-                <svg class="svg-heart" width="16" height="16" viewBox="0 0 24 24" fill="#ff7b72" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-                </svg>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div class="svg-heart-container">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="#ff4b4b" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                    </svg>
+                </div>
                 <span class="live-pulse-text">TRH ŽIJE</span>
             </div>
         </div>
@@ -410,7 +385,7 @@ else:
         </div>
     """, unsafe_allow_html=True)
 
-# --- TRADING JOURNAL S SVG GRAFIKOU BANKOVEK (BEZ TEXTOVÉHO NADPISU) ---
+# --- TRADING JOURNAL S REÁLNOU GRAFIKOU PENĚZ (BEZ TEXTOVÉHO NADPISU) ---
 pnl_class = "negative" if total_pnl < 0 else "positive"
 pnl_text = f"-${abs(total_pnl):,.2f} USD" if total_pnl < 0 else f"+${total_pnl:,.2f} USD"
 
@@ -423,10 +398,8 @@ with col1:
                 <div class="metric-title" style="color: #7ee787;">CELKOVÝ VÝSLEDEK</div>
                 <div class="metric-value {pnl_class}">{pnl_text}</div>
             </div>
-            <!-- SVG Bankovka / Peníze -->
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M21 4H3C1.9 4 1 4.9 1 6V18C1 19.1 1.9 20 3 20H21C22.1 20 23 19.1 23 18V6C23 4.9 22.1 4 21 4ZM21 18H3V6H21V18ZM12 8C9.79 8 8 9.79 8 12C8 14.21 9.79 16 12 16C14.21 16 16 14.21 16 12C16 9.79 14.21 8 12 8ZM12 14.5C10.62 14.5 9.5 13.38 9.5 12C9.5 10.62 10.62 9.5 12 9.5C13.38 9.5 14.5 10.62 14.5 12C14.5 13.38 13.38 14.5 12 14.5Z" fill="#2ea043"/>
-            </svg>
+            <!-- Reálná ikona bankovek -->
+            <img src="https://images.unsplash.com/photo-1580519542036-c47de6196ba5?w=80&auto=format&fit=crop&q=80" style="width: 40px; height: 40px; border-radius: 6px; object-fit: cover; border: 1px solid #2ea043;">
         </div>
     ''', unsafe_allow_html=True)
 
@@ -437,10 +410,8 @@ with col2:
                 <div class="metric-title" style="color: #e3b341;">WIN RATE</div>
                 <div class="metric-value neutral">{win_rate:.2f} %</div>
             </div>
-            <!-- SVG Úspěch / Graf -->
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M16 6L18.29 8.29L13.41 13.17L9.41 9.17L2 16.59L3.41 18L9.41 12L13.41 16L19.71 9.71L22 12V6H16Z" fill="#d29922"/>
-            </svg>
+            <!-- Reálná ikona růstu / úspěchu -->
+            <img src="https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=80&auto=format&fit=crop&q=80" style="width: 40px; height: 40px; border-radius: 6px; object-fit: cover; border: 1px solid #d29922;">
         </div>
     ''', unsafe_allow_html=True)
 
