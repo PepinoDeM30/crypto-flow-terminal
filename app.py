@@ -175,7 +175,7 @@ st.markdown("""
 if st.button("🔄 AKTUALIZOVAT TRH"):
     pass
 
-# --- 2. HLAVNÍ HLAVIČKA (Bez 5M Scalp, výrazný znak BTC) ---
+# --- 2. HLAVNÍ HLAVIČKA ---
 st.markdown("""
     <div class="crypto-header">
         <div class="btc-badge">₿</div>
@@ -201,29 +201,26 @@ def load_trading_data():
         pass
     return -37.77, 36.84
 
-# --- 4. ŽIVÁ DATA Z OKX (5M CVD historie & 5M OI změna v BTC) ---
+# --- 4. ŽIVÁ DATA Z OKX (BTCUSD UM / Linear Swap v BTC) ---
 def fetch_okx_data():
     ts = int(time.time() * 1000)
     cvd_5m = 0.0
     oi_change_5m = 0.0
-    cvd_series = [] # Poslední 4 svíčky pro Setup 1
+    cvd_series = []
 
     try:
-        # Aktuální cena BTC pro přesný přepočet
         ticker = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP&t={ts}", timeout=3).json()
-        btc_price = float(ticker["data"][0]["last"]) if ticker.get("data") else 76000.0
+        btc_price = float(ticker["data"][0]["last"]) if ticker.get("data") else 75800.0
 
-        # A) 5M Taker Buy/Sell Volume z OKX Rubik API (poslední 4 pětiminutové svíčky)
+        # A) 5M Taker Buy/Sell Volume z OKX (poslední 4 pětiminutové svíčky)
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&t={ts}"
         vol_res = requests.get(vol_url, timeout=3).json().get("data", [])
 
         if len(vol_res) >= 4:
-            # OKX vrací [timestamp, sellVol, buyVol] od nejnovějšího
             for row in vol_res[:4][::-1]:
                 sell_v = float(row[1])
                 buy_v = float(row[2])
                 delta_raw = buy_v - sell_v
-                # Pokud je objem v USD, převedeme na BTC
                 if (buy_v + sell_v) > 50000:
                     delta_btc = delta_raw / btc_price
                 else:
@@ -231,14 +228,13 @@ def fetch_okx_data():
                 cvd_series.append(delta_btc)
             cvd_5m = cvd_series[-1]
         else:
-            # Záložní výpočet z posledních obchodů
             trades_res = requests.get(f"https://www.okx.com/api/v5/market/trades?instId=BTC-USDT-SWAP&limit=500&t={ts}", timeout=3).json()
             buy_c = sum(float(t["sz"]) for t in trades_res.get("data", []) if t["side"] == "buy")
             sell_c = sum(float(t["sz"]) for t in trades_res.get("data", []) if t["side"] == "sell")
             cvd_5m = (buy_c - sell_c) * 0.01
             cvd_series = [cvd_5m / 3, cvd_5m / 3, cvd_5m / 3, cvd_5m]
 
-        # B) 5M změna Open Interestu z OKX Rubik API
+        # B) 5M změna Open Interestu z OKX
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&t={ts}"
         oi_res = requests.get(oi_url, timeout=3).json().get("data", [])
         if len(oi_res) >= 2:
@@ -246,7 +242,6 @@ def fetch_okx_data():
             prev_oi_usd = float(oi_res[1][1])
             oi_change_5m = (curr_oi_usd - prev_oi_usd) / btc_price
         else:
-            # Živé OI porovnané s předchozím stavem
             live_oi_res = requests.get(f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP&t={ts}", timeout=3).json()
             curr_oi_btc = float(live_oi_res["data"][0]["oiCcy"])
             if "okx_prev_oi" in st.session_state:
@@ -263,14 +258,12 @@ def fetch_hyperliquid_data():
     oi_change_5m = 0.0
     try:
         headers = {"Content-Type": "application/json"}
-        # A) Živé obchody na Hyperliquidu pro výpočet delty (CVD v BTC)
         trades_req = requests.post("https://api.hyperliquid.xyz/info", json={"type": "recentTrades", "coin": "BTC"}, headers=headers, timeout=3).json()
         if isinstance(trades_req, list):
             buy_btc = sum(float(t["sz"]) for t in trades_req if t.get("side") == "B")
             sell_btc = sum(float(t["sz"]) for t in trades_req if t.get("side") == "A")
             cvd_5m = buy_btc - sell_btc
 
-        # B) Živý Open Interest na Hyperliquidu v BTC
         meta_req = requests.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"}, headers=headers, timeout=3).json()
         if isinstance(meta_req, list) and len(meta_req) >= 2:
             universe = meta_req[0].get("universe", [])
@@ -281,14 +274,13 @@ def fetch_hyperliquid_data():
             if "hl_baseline_oi" not in st.session_state:
                 st.session_state["hl_baseline_oi"] = curr_hl_oi
             oi_change_5m = curr_hl_oi - st.session_state["hl_baseline_oi"]
-            # Průběžná adaptace baseline, aby hodnota reagovala na živý trh
             st.session_state["hl_baseline_oi"] = (st.session_state["hl_baseline_oi"] * 0.85) + (curr_hl_oi * 0.15)
 
         return cvd_5m, oi_change_5m
     except Exception:
         return 0.0, 0.0
 
-# --- 6. ALGORITMUS SETUP 1 (KOMBINACE VARIANTY B + VARIANTY C) ---
+# --- 6. ALGORITMUS SETUP 1 (KONZERVATIVNÍ VARIANTY B + C) ---
 def scan_setup_1(cvd_series, total_live_cvd):
     try:
         ts = int(time.time() * 1000)
@@ -297,57 +289,59 @@ def scan_setup_1(cvd_series, total_live_cvd):
         if len(data) < 4:
             return "Nedostatek dat pro analýzu 5M svíček.", "neutral", False
 
-        # Otočíme data od nejstarší po nejnovější a vezmeme poslední 4 svíčky
         candles = data[:4][::-1]
         
-        # Poslední 3 svíčky pro kontrolu úzkého range
+        # Poslední 3 svíčky (15 minut)
         window_3 = candles[-3:]
         hh_3 = max(float(k[2]) for k in window_3)
         ll_3 = min(float(k[3]) for k in window_3)
         range_3_pct = ((hh_3 - ll_3) / ll_3) * 100 if ll_3 > 0 else 99.0
 
-        # Všechny 4 svíčky pro kontrolu Varianty B
+        # Poslední 4 svíčky (20 minut)
         hh_4 = max(float(k[2]) for k in candles)
         ll_4 = min(float(k[3]) for k in candles)
         range_4_pct = ((hh_4 - ll_4) / ll_4) * 100 if ll_4 > 0 else 99.0
 
-        max_allowed_range = 0.28 # Tvůj limit pro úzký range (0,28 %)
+        # KONZERVATIVNÍ PARAMETRY (Podle měřítka Velo)
+        max_allowed_range = 0.20  # Přísný cenový zámek 0,20 %
+        min_single_spike = 80.0   # 4. svíčka musí mít alespoň 80 BTC deltu
+        min_ratio_b = 3.0         # 4. svíčka musí být aspoň 3x větší než součet předchozích 3
+        min_cum_3_delta = 130.0   # Kumulativní delta za 3 svíčky v rangi musí být aspoň 130 BTC
 
-        # Pokud ani poslední 3 svíčky nejsou v úzkém rangi, trh trenduje
         if range_3_pct > max_allowed_range:
-            return f"Trh není uzamčen (Range posledních 3 svíček: {range_3_pct:.2f} %, limit: {max_allowed_range:.2f} %).", "neutral", False
+            return f"Trh není uzamčen (Range 3 svíček: {range_3_pct:.2f} %, limit: {max_allowed_range:.2f} %).", "neutral", False
 
-        # Získání delty pro poslední 4 svíčky [d1, d2, d3, d4]
-        d1, d2, d3, d4 = cvd_series if len(cvd_series) == 4 else [5.0, 5.0, 5.0, total_live_cvd]
+        d1, d2, d3, d4 = cvd_series if len(cvd_series) == 4 else [10.0, 10.0, 10.0, total_live_cvd]
         
-        # --- VARIANTA B: 4. svíčka je >= 2x větší než souhrn předchozích 3 svíček ---
+        # --- VARIANTA B: 4. svíčka >= 3x souhrn předchozích 3 svíček a zároveň >= 80 BTC ---
         prev_3_sum_abs = abs(d1) + abs(d2) + abs(d3)
-        safe_prev_sum = prev_3_sum_abs if prev_3_sum_abs >= 5.0 else 5.0
+        safe_prev_sum = prev_3_sum_abs if prev_3_sum_abs >= 15.0 else 15.0
         ratio_b = abs(d4) / safe_prev_sum
 
-        if range_4_pct <= max_allowed_range and ratio_b >= 2.0 and abs(d4) >= 15.0:
+        if range_4_pct <= max_allowed_range and ratio_b >= min_ratio_b and abs(d4) >= min_single_spike:
             direction = "BEARISH" if d4 > 0 else "BULLISH"
             col = "negative" if direction == "BEARISH" else "positive"
-            action = "Kupci narazili do limitní zdi!" if direction == "BEARISH" else "Prodejci narazili do limitní zdi!"
+            action = "Kupci narazili do masivní zdi!" if direction == "BEARISH" else "Prodejci narazili do masivní zdi!"
             return (f"🔥 [VARIANTA B] {direction} ABSORPCE! 4M Range: {range_4_pct:.2f} %. "
-                    f"4. svíčka ({d4:+.1f} BTC) je {ratio_b:.1f}x větší než souhrn předchozích 3! {action}"), col, True
+                    f"4. svíčka ({d4:+.1f} BTC) je {ratio_b:.1f}x větší než předchozí 3! {action}"), col, True
 
-        # --- VARIANTA C: Kumulativní absorpce napříč 3 svíčkami v rangi ---
+        # --- VARIANTA C: Kumulativní absorpce >= 130 BTC za 3 svíčky v 0,20% rangi ---
         cum_3_delta = d2 + d3 + d4
-        if range_3_pct <= max_allowed_range and abs(cum_3_delta) >= 35.0:
+        if range_3_pct <= max_allowed_range and abs(cum_3_delta) >= min_cum_3_delta:
             direction = "BEARISH" if cum_3_delta > 0 else "BULLISH"
             col = "negative" if direction == "BEARISH" else "positive"
-            action = "Trvalý tlak kupců pohlcen!" if direction == "BEARISH" else "Trvalý tlak prodejců pohlcen!"
+            action = "Agresivní kupci plně absorbováni!" if direction == "BEARISH" else "Agresivní prodejci plně absorbováni!"
             return (f"🔥 [VARIANTA C] KUMULATIVNÍ {direction} ABSORPCE! 3M Range: {range_3_pct:.2f} %. "
-                    f"Kumulativní delta za 3 svíčky: {cum_3_delta:+.1f} BTC bez proražení ceny! {action}"), col, True
+                    f"Kumulativní delta za 3 svíčky: {cum_3_delta:+.1f} BTC bez proražení! {action}"), col, True
 
-        return (f"Cena uzamčena v úzkém rangi ({range_3_pct:.2f} %). "
-                f"Poslední svíčka: {d4:+.1f} BTC ({ratio_b:.1f}x vůči 3 předchozím), kumulativně 3 svíčky: {cum_3_delta:+.1f} BTC. Čekám na anomálii..."), "neutral", False
+        return (f"Cena v 0,20% zámku ({range_3_pct:.2f} %). "
+                f"Poslední svíčka: {d4:+.1f} BTC (cíl ±{min_single_spike:.0f} BTC & {min_ratio_b:.0f}x), "
+                f"3M kumulace: {cum_3_delta:+.1f} BTC (cíl ±{min_cum_3_delta:.0f} BTC)."), "neutral", False
 
     except Exception:
         return "API pro skener Setupu 1 momentálně načítá data...", "neutral", False
 
-# --- 7. ALGORITMUS SETUP 2 (4H SFP & PRUDKÝ POKLES OI) ---
+# --- 7. ALGORITMUS SETUP 2 (4H SFP & KONZERVATIVNÍ POKLES OI) ---
 def scan_setup_2(current_oi_change_btc):
     try:
         ts = int(time.time() * 1000)
@@ -364,19 +358,21 @@ def scan_setup_2(current_oi_change_btc):
         history_4h = data[1:49]
         swing_high_4h = max(float(k[2]) for k in history_4h)
         swing_low_4h = min(float(k[3]) for k in history_4h)
-        oi_drop_threshold = -15.0 
+        
+        # Konzervativní hranice pro výplach OI (-25 BTC za 5 minut)
+        oi_drop_threshold = -25.0 
 
         if curr_low < swing_low_4h and curr_close > swing_low_4h:
             if current_oi_change_btc <= oi_drop_threshold:
                 return f"🔥 BULLISH SFP POTVRZEN! Vybráno 4H Low ({swing_low_4h:.0f} USD) + OI propadl o {current_oi_change_btc:.1f} BTC!", "positive", True
             else:
-                return f"Pozor: 4H Low ({swing_low_4h:.0f} USD) vybráno, ale OI zatím neklesá ({current_oi_change_btc:+.1f} BTC).", "neutral", False
+                return f"Pozor: 4H Low ({swing_low_4h:.0f} USD) vybráno, ale chybí velký výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -25 BTC).", "neutral", False
 
         if curr_high > swing_high_4h and curr_close < swing_high_4h:
             if current_oi_change_btc <= oi_drop_threshold:
                 return f"🔥 BEARISH SFP POTVRZEN! Vybráno 4H High ({swing_high_4h:.0f} USD) + OI propadl o {current_oi_change_btc:.1f} BTC!", "negative", True
             else:
-                return f"Pozor: 4H High ({swing_high_4h:.0f} USD) vybráno, ale OI zatím neklesá ({current_oi_change_btc:+.1f} BTC).", "neutral", False
+                return f"Pozor: 4H High ({swing_high_4h:.0f} USD) vybráno, ale chybí velký výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -25 BTC).", "neutral", False
 
         return f"Cena se pohybuje uvnitř 4H range ({swing_low_4h:.0f} – {swing_high_4h:.0f} USD). Žádný sweep.", "neutral", False
     except Exception:
@@ -440,9 +436,9 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# DETAILY BURZ (NOVÝ VÝRAZNÝ NADPIS)
+# DETAILY BURZ
 st.markdown('<div class="section-banner">🌐 DETAILY BURZ (V ČISTÝCH BTC)</div>', unsafe_allow_html=True)
-tab_okx, tab_hl = st.tabs(["🔥 OKX Futures", "💧 Hyperliquid Perp"])
+tab_okx, tab_hl = st.tabs(["🔥 OKX (BTCUSD UM)", "💧 Hyperliquid Perp"])
 
 with tab_okx:
     c_col = "positive" if okx_cvd >= 0 else "negative"
@@ -464,7 +460,7 @@ with tab_hl:
         </div>
     """, unsafe_allow_html=True)
 
-# TRADING JOURNAL (NOVÝ VÝRAZNÝ NADPIS)
+# TRADING JOURNAL
 st.markdown('<div class="section-banner" style="border-left-color: #f7931a;">📊 TRADING JOURNAL (OKX)</div>', unsafe_allow_html=True)
 col1, col2 = st.columns(2)
 pnl_class = "negative" if total_pnl < 0 else "positive"
