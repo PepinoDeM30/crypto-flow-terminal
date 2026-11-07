@@ -269,4 +269,53 @@ def fetch_okx_data():
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&t={ts}"
         oi_res = requests.get(oi_url, timeout=3).json().get("data", [])
         if len(oi_res) >= 4:
-            # Poslední 3 změny OI (před 10 min, před 
+            for i in range(3, 0, -1):
+                curr = float(oi_res[i-1][1])
+                prev = float(oi_res[i][1])
+                oi_series_3.append((curr - prev) / btc_price)
+            oi_change_5m = oi_series_3[-1]
+
+        return cvd_5m, oi_change_5m, cvd_series_12, oi_series_3, candles_96
+    except Exception:
+        return 0.0, 0.0, [], [], []
+
+# --- 4. SETUP 1: DYNAMICKÝ RANGE 3–12 SVÍČEK (0.25% TĚLA + ±200 BTC CVD) ---
+def scan_setup_1(candles_96, cvd_series_12):
+    try:
+        if len(candles_96) < 12 or len(cvd_series_12) < 12:
+            return "Načítám 12svíčkovou historii z OKX...", "neutral", False
+
+        candles_12 = candles_96[:12][::-1]
+        max_body_range_pct = 0.25
+        target_cum_cvd = 200.0
+        best_valid_window = None
+
+        for length in range(3, 13):
+            sub_candles = candles_12[-length:]
+            sub_cvd = cvd_series_12[-length:]
+
+            body_highs = [max(float(k[1]), float(k[4])) for k in sub_candles]
+            body_lows = [min(float(k[1]), float(k[4])) for k in sub_candles]
+
+            highest_body = max(body_highs)
+            lowest_body = min(body_lows)
+
+            if lowest_body == 0:
+                continue
+
+            body_range_pct = ((highest_body - lowest_body) / lowest_body) * 100
+
+            if body_range_pct <= max_body_range_pct:
+                cum_cvd = sum(sub_cvd)
+                if best_valid_window is None or abs(cum_cvd) > abs(best_valid_window["cum_cvd"]):
+                    best_valid_window = {
+                        "length": length,
+                        "range_pct": body_range_pct,
+                        "cum_cvd": cum_cvd
+                    }
+
+        if best_valid_window is None:
+            c3 = candles_12[-3:]
+            bh3 = max(max(float(k[1]), float(k[4])) for k in c3)
+            bl3 = min(min(float(k[1]), float(k[4])) for k in c3)
+            r3_pct = ((bh3 - bl3) / bl3) * 100 if bl3 > 0
