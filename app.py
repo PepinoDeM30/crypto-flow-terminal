@@ -15,45 +15,33 @@ footer {visibility: hidden !important; display: none !important;}
 .viewerBadge_container__1QSob {display: none !important;}
 [data-testid="stAppViewBlockContainer"] {padding-top: 0rem !important; padding-bottom: 2rem !important;}
 
-/* Základní barva pozadí CELÉ APLIKACE S PADAJÍCÍMI PENĚZI */
+/* PADAJÍCÍ DOLARY NA POZADÍ CELÉ APLIKACE S JEMNÝM FILTREM */
 .stApp { 
     background-color: #040609; 
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.85), rgba(4, 6, 9, 0.95)), 
-        url('https://images.unsplash.com/photo-1605792657660-596af9009e82?q=80&w=800&auto=format&fit=crop');
-    background-attachment: fixed; /* Pozadí se nehýbe, když scroluješ */
+        linear-gradient(rgba(4, 6, 9, 0.65), rgba(4, 6, 9, 0.90)), 
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');
+    background-attachment: fixed;
+    background-position: center;
     background-size: cover;
     color: #f0f6fc; 
 }
 
-/* GIGANTICKÁ 3D MINCE A NOVÝ ZLATÝ NADPIS */
-.header-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 15px; margin-bottom: 30px; }
-.giant-btc-img { width: 100%; max-width: 320px; border-radius: 20px; box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4); margin-bottom: 15px; }
-
-/* LUXUSNÍ ZLATÝ TEXT MÍSTO OBYČEJNÉHO PÍSMA */
-.golden-text {
-    font-size: 32px;
-    font-weight: 900;
-    letter-spacing: 4px;
-    text-align: center;
-    background: linear-gradient(to bottom, #ffe066 0%, #f7931a 50%, #994d00 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0px 4px 10px rgba(247, 147, 26, 0.5));
-    margin-left: 20px; /* Zarovnání na střed s obrázkem */
-}
+/* TVŮJ LUXUSNÍ ZLATÝ BTC OBRÁZEK S NADPISEM */
+.header-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 15px; margin-bottom: 25px; }
+.giant-btc-img { width: 100%; max-width: 380px; border-radius: 20px; box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4); }
 
 /* MATICE A PRÉMIOVÉ 3D SRDCE (Z TVÉHO GITHUBŮ) JAKO POZADÍ */
 @keyframes heart-pulse-bg { 
     0% { background-size: 110%; } 
-    50% { background-size: 130%; } 
+    50% { background-size: 125%; } 
     100% { background-size: 110%; } 
 }
 
 .matrix-card { 
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.6), rgba(4, 6, 9, 0.9)), 
-        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_r.jpg');
+        linear-gradient(rgba(4, 6, 9, 0.3), rgba(4, 6, 9, 0.7)), /* Velmi jemný filtr, ať srdce září */
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_ruby_red_neon_heart.jpg');
     background-position: center;
     background-repeat: no-repeat;
     animation: heart-pulse-bg 2.5s infinite ease-in-out;
@@ -67,10 +55,13 @@ footer {visibility: hidden !important; display: none !important;}
     overflow: hidden;
 }
 
-/* VÝSLEDKY S HROMADOU BANKOVEK (TEN NEONOVÝ OBRÁZEK Z CHATU) */
+/* VÝSLEDKY S HROMADOU BANKOVEK (TVŮJ OBRÁZEK) */
 .money-journal { 
-    /* Tento odkaz povede na bezpečný obrázek peněz, protože tvůj z fotky v GitHubu není */
-    background: url('https://images.unsplash.com/photo-1580519542036-c47de6196ba5?w=800&auto=format&fit=crop') center/cover; 
+    background-image: 
+        linear-gradient(rgba(2, 10, 5, 0.3), rgba(2, 10, 5, 0.6)), /* Odstraněna ta silná tma! */
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_neat_pile_of_crisp_US_dolla.jpg');
+    background-position: center;
+    background-size: cover;
     border-radius: 15px; 
     padding: 30px 20px; 
     text-align: center; 
@@ -80,7 +71,6 @@ footer {visibility: hidden !important; display: none !important;}
     overflow: hidden; 
     border: 1px solid #1f7a43; 
 }
-.money-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(2, 10, 5, 0.85); z-index: 1; }
 .money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; align-items: center; }
 
 /* SETUP KARTY A TLAČÍTKA */
@@ -101,11 +91,10 @@ div[role="radiogroup"] label { font-weight: 800 !important; color: #c9d1d9 !impo
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 """, unsafe_allow_html=True)
 
-# --- 1. HLAVIČKA S BITCOINEM A NOVÝM ZLATÝM NADPISEM ---
+# --- 1. HLAVIČKA S TVÝM BITCOIN OBRÁZKEM Z GITHUBŮ ---
 st.markdown("""
 <div class="header-container">
-<img src="https://images.unsplash.com/photo-1621416894569-0f39ed31d247?q=80&w=800&auto=format&fit=crop" class="giant-btc-img">
-<div class="golden-text">BTC ORDER FLOW</div>
+<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
 </div>
 """, unsafe_allow_html=True)
 
@@ -198,18 +187,17 @@ if trg1 or trg2:
 cvd_color = '#3fb950' if okx_cvd >= 0 else '#f85149'
 oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 
-# ZDE JE TVÉ SRDCE JAKO POZADÍ MATICE
 st.markdown(f"""
 <div class="matrix-card">
 <div style="color: #ffffff; font-weight: 900; font-size: 18px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">OKX ORDER FLOW MATRIX</div>
 <div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 10px; position: relative; z-index: 5;">
 <div style="text-align: center;">
-<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">5M CVD</div>
-<div style="font-size: 40px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{okx_cvd:+,.1f}</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M CVD</div>
+<div style="font-size: 40px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_cvd:+,.1f}</div>
 </div>
 <div style="text-align: center;">
-<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">5M OI</div>
-<div style="font-size: 40px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{okx_oi_chg:+,.1f}</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M OI</div>
+<div style="font-size: 40px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_oi_chg:+,.1f}</div>
 </div>
 </div>
 </div>
@@ -230,7 +218,7 @@ cvd_str = " | ".join([f"{x:+.1f}" for x in sub_cvd])
 oi_str = " | ".join([f"{x:+.1f}" for x in sub_oi])
 
 st.markdown(f"""
-<div style="background: rgba(13, 19, 31, 0.8); backdrop-filter: blur(5px); border: 1px solid #1f2937; border-radius: 15px; padding: 15px; text-align: center; margin-bottom: 20px;">
+<div style="background: rgba(13, 19, 31, 0.7); backdrop-filter: blur(10px); border: 1px solid #1f2937; border-radius: 15px; padding: 15px; text-align: center; margin-bottom: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
 <div style="color: #6e7681; font-size: 13px; font-weight: 900; text-transform: uppercase; margin-bottom: 8px;">DATA ZA POSLEDNÍCH {tf.upper()}</div>
 <div style="font-size: 16px; font-weight: 800; color: {'#3fb950' if sum_cvd >= 0 else '#f85149'}; margin-bottom: 4px;">KUMULATIVNÍ CVD: {sum_cvd:+.1f} BTC</div>
 <div style="font-size: 14px; font-weight: 700; color: #c9d1d9; word-wrap: break-word; line-height: 1.6; margin-bottom: 10px;">{cvd_str}</div>
@@ -258,18 +246,16 @@ else:
 pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
 pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
-# ZDE JE OBRÁZEK HROMADY BANKOVEK
 st.markdown(f"""
 <div class="money-journal">
-<div class="money-overlay"></div>
 <div class="money-content">
 <div style="text-align: center;">
-<div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px;">CELKOVÝ PNL</div>
-<div style="font-size: 34px; font-weight: 900; color: {pnl_color};">{pnl_sign}{abs(total_pnl):,.2f}</div>
+<div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">CELKOVÝ PNL</div>
+<div style="font-size: 34px; font-weight: 900; color: {pnl_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{pnl_sign}{abs(total_pnl):,.2f}</div>
 </div>
 <div style="text-align: center;">
-<div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px;">WIN RATE</div>
-<div style="font-size: 34px; font-weight: 900; color: #f1e05a;">{win_rate:.2f} %</div>
+<div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">WIN RATE</div>
+<div style="font-size: 34px; font-weight: 900; color: #f1e05a; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
 </div>
 </div>
 </div>
