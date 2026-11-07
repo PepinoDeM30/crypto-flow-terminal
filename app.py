@@ -318,4 +318,166 @@ def scan_setup_1(candles_96, cvd_series_12):
             c3 = candles_12[-3:]
             bh3 = max(max(float(k[1]), float(k[4])) for k in c3)
             bl3 = min(min(float(k[1]), float(k[4])) for k in c3)
-            r3_pct = ((bh3 - bl3) / bl3) * 100 if bl3 > 0
+            r3_pct = ((bh3 - bl3) / bl3) * 100 if bl3 > 0 else 0.0
+            return (f"Trh trenduje mimo 0,25% zámek. (Rozpětí těl 3 svíček: {r3_pct:.2f} %)."), "neutral", False
+
+        w_len = best_valid_window["length"]
+        w_rng = best_valid_window["range_pct"]
+        w_cvd = best_valid_window["cum_cvd"]
+
+        if abs(w_cvd) >= target_cum_cvd:
+            direction = "BEARISH" if w_cvd > 0 else "BULLISH"
+            col = "negative" if direction == "BEARISH" else "positive"
+            action = "Agresivní kupci pohlceni v rangi!" if direction == "BEARISH" else "Agresivní prodejci pohlceni v rangi!"
+            return (f"🔥 SETUP 1 PLATNÝ ({direction})! "
+                    f"Aktivní range: {w_len} svíček ({w_len*5} min), těla: {w_rng:.2f} %. "
+                    f"Čisté kumulativní CVD v rangi: {w_cvd:+.1f} BTC! {action}"), col, True
+
+        return (f"Aktivní range nalezen: {w_len} svíček ({w_len*5} min) v zámku {w_rng:.2f} % (těla). "
+                f"Kumulativní CVD: {w_cvd:+.1f} BTC (Cíl: ±{target_cum_cvd:.0f} BTC)."), "neutral", False
+
+    except Exception:
+        return "Skener Setupu 1 momentálně zpracovává data...", "neutral", False
+
+# --- 5. SETUP 2: 4H–8H SFP & VÝPLACH OI (-70 BTC) ---
+def scan_setup_2(candles_96, current_oi_change_btc):
+    try:
+        if len(candles_96) < 96:
+            return "Načítám 8H historii pro SFP...", "neutral", False
+
+        current_candle = candles_96[0]
+        curr_high = float(current_candle[2])
+        curr_low = float(current_candle[3])
+        curr_close = float(current_candle[4])
+        
+        history_4h_8h = candles_96[48:96]
+        swing_high_8h = max(float(k[2]) for k in history_4h_8h)
+        swing_low_8h = min(float(k[3]) for k in history_4h_8h)
+        
+        oi_drop_threshold = -70.0
+
+        if curr_low < swing_low_8h and curr_close > swing_low_8h:
+            if current_oi_change_btc <= oi_drop_threshold:
+                return f"🔥 BULLISH SFP POTVRZEN! Vybráno 4H-8H Low ({swing_low_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "positive", True
+            else:
+                return f"Pozor: 4H-8H Low ({swing_low_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+
+        if curr_high > swing_high_8h and curr_close < swing_high_8h:
+            if current_oi_change_btc <= oi_drop_threshold:
+                return f"🔥 BEARISH SFP POTVRZEN! Vybráno 4H-8H High ({swing_high_8h:.0f} USD) + OI masivně propadl o {current_oi_change_btc:.1f} BTC!", "negative", True
+            else:
+                return f"Pozor: 4H-8H High ({swing_high_8h:.0f} USD) vybráno, ale chybí výplach OI ({current_oi_change_btc:+.1f} BTC / cíl -70 BTC).", "neutral", False
+
+        return f"Cena v bezpečném pásmu (4H-8H Low: {swing_low_8h:.0f} | High: {swing_high_8h:.0f} USD). Žádný sweep.", "neutral", False
+    except Exception:
+        return "Skener Setupu 2 momentálně načítá data...", "neutral", False
+
+# --- NAČTENÍ DAT A SPUŠTĚNÍ SKENERŮ ---
+total_pnl, win_rate = load_trading_data()
+okx_cvd, okx_oi_chg, cvd_series_12, oi_series_3, candles_96 = fetch_okx_data()
+
+setup1_msg, setup1_col, alert1_triggered = scan_setup_1(candles_96, cvd_series_12)
+setup2_msg, setup2_col, alert2_triggered = scan_setup_2(candles_96, okx_oi_chg)
+
+# JEDNORÁZOVÝ ZVUKOVÝ ALARM PŘI AKTIVACI
+if alert1_triggered or alert2_triggered:
+    st.markdown("""
+        <audio autoplay>
+          <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+        </audio>
+    """, unsafe_allow_html=True)
+
+# --- SPOJENÝ TRŽNÍ PANEL: OKX ORDER FLOW MATRIX (5M + POSLEDNÍ 3 SVÍČKY CVD & OI) ---
+cvd_col = "positive" if okx_cvd >= 0 else "negative"
+oi_col = "positive" if okx_oi_chg >= 0 else "negative"
+
+c1, c2, c3 = (cvd_series_12[-3], cvd_series_12[-2], cvd_series_12[-1]) if len(cvd_series_12) >= 3 else (0, 0, 0)
+oi1, oi2, oi3 = (oi_series_3[0], oi_series_3[1], oi_series_3[2]) if len(oi_series_3) >= 3 else (0, 0, 0)
+
+st.markdown(f"""
+    <div class="global-card" style="border: 1px solid #388bfd;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="metric-title text-3d" style="color: #58a6ff; font-size: 15px;">🌐 OKX ORDER FLOW MATRIX</div>
+            <div><span class="beating-heart">❤️</span><span class="live-pulse-text">TRH ŽIJE</span></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 14px;">
+            <div>
+                <div style="font-size: 11px; color: #8b949e; font-weight: 700;">AKTUÁLNÍ 5M CVD</div>
+                <div class="metric-value {cvd_col} text-3d">{okx_cvd:+,.2f} BTC</div>
+            </div>
+            <div>
+                <div style="font-size: 11px; color: #8b949e; font-weight: 700;">AKTUÁLNÍ 5M OI</div>
+                <div class="metric-value {oi_col} text-3d">{okx_oi_chg:+,.2f} BTC</div>
+            </div>
+        </div>
+        <hr style="border-color: #2b384e; margin: 12px 0;">
+        <div style="font-size: 11px; color: #8b949e; font-weight: 700; margin-bottom: 6px;">HISTORIE POSLEDNÍCH 3 SVÍČEK (15 MIN)</div>
+        <div style="display: flex; justify-content: space-between; font-size: 13px;">
+            <div><b>CVD:</b> <span class="{'positive' if c1 >= 0 else 'negative'}">{c1:+.1f}</span> | <span class="{'positive' if c2 >= 0 else 'negative'}">{c2:+.1f}</span> | <span class="{'positive' if c3 >= 0 else 'negative'}">{c3:+.1f} BTC</span></div>
+            <div><b>OI:</b> <span class="{'positive' if oi1 >= 0 else 'negative'}">{oi1:+.1f}</span> | <span class="{'positive' if oi2 >= 0 else 'negative'}">{oi2:+.1f}</span> | <span class="{'positive' if oi3 >= 0 else 'negative'}">{oi3:+.1f} BTC</span></div>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+# --- PŘEPÍNÁNÍ SETUP 1 A SETUP 2 PŘES TLAČÍTKO ---
+s1_badge = "🔴 ALARM!" if alert1_triggered else "⚡ Setup 1: Absorpce"
+s2_badge = "🔴 ALARM!" if alert2_triggered else "🎯 Setup 2: 4H-8H SFP"
+
+selected_setup = st.radio(
+    "Přepínač algoritmů:",
+    [s1_badge, s2_badge],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+
+if selected_setup == s1_badge:
+    box_class_1 = "alert-box-setup1 signal-triggered" if alert1_triggered else "alert-box-setup1"
+    st.markdown(f"""
+        <div class="{box_class_1}">
+            <div class="setup-main-title text-3d" style="color: #f7931a;">⚡ SETUP 1: KUMULATIVNÍ ABSORPCE (3–12 SVÍČEK)</div>
+            <div class="setup-sub-text {setup1_col}">{setup1_msg}</div>
+        </div>
+    """, unsafe_allow_html=True)
+else:
+    box_class_2 = "alert-box-setup2 signal-triggered" if alert2_triggered else "alert-box-setup2"
+    st.markdown(f"""
+        <div class="{box_class_2}">
+            <div class="setup-main-title text-3d" style="color: #a371f7;">🎯 SETUP 2: SFP & OI OTOČKA (4H–8H SWEEP)</div>
+            <div class="setup-sub-text {setup2_col}">{setup2_msg}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+# --- TRADING JOURNAL (BANKOVKOVÝ DESIGN S 3D EFEKTEM ZE SOUHRNU ŘÁDKU 18) ---
+st.markdown('<div class="section-banner text-3d">📊 TRADING JOURNAL (OKX)</div>', unsafe_allow_html=True)
+col1, col2 = st.columns(2)
+pnl_class = "negative" if total_pnl < 0 else "positive"
+pnl_text = f"-${abs(total_pnl):,.2f} USD" if total_pnl < 0 else f"+${total_pnl:,.2f} USD"
+
+with col1:
+    st.markdown(f'''
+        <div class="banknote-card">
+            <div class="metric-title" style="color: #a3e4d7;">CELKOVÝ VÝSLEDEK</div>
+            <div class="metric-value {pnl_class} text-3d">{pnl_text}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+with col2:
+    st.markdown(f'''
+        <div class="banknote-card">
+            <div class="metric-title" style="color: #a3e4d7;">WIN RATE</div>
+            <div class="metric-value neutral text-3d">{win_rate:.2f} %</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+# --- OVLÁDACÍ PRVKY ÚPLNĚ DOLE POD VŠÍM ---
+st.markdown("<br>", unsafe_allow_html=True)
+col_bot1, col_bot2 = st.columns([3, 2])
+with col_bot1:
+    if st.button("🔄 AKTUALIZOVAT TRH"):
+        pass
+with col_bot2:
+    auto_refresh = st.toggle("⏱️ Auto (20s)", value=False)
+
+# AUTOMATICKÁ OBNOVA KAŽDÝCH 20 SEKUND (POKUD JE ZAPNUTÝ PŘEPÍNAČ)
+if auto_refresh:
+    time.sleep(20)
+    st.rerun()
