@@ -15,33 +15,83 @@ footer {visibility: hidden !important; display: none !important;}
 .viewerBadge_container__1QSob {display: none !important;}
 [data-testid="stAppViewBlockContainer"] {padding-top: 0rem !important; padding-bottom: 2rem !important;}
 
-/* Základní barva pozadí */
-.stApp { background-color: #040609; color: #f0f6fc; }
+/* Základní barva pozadí CELÉ APLIKACE S PADAJÍCÍMI PENĚZI */
+.stApp { 
+    background-color: #040609; 
+    background-image: 
+        linear-gradient(rgba(4, 6, 9, 0.85), rgba(4, 6, 9, 0.95)), 
+        url('https://images.unsplash.com/photo-1605792657660-596af9009e82?q=80&w=800&auto=format&fit=crop');
+    background-attachment: fixed; /* Pozadí se nehýbe, když scroluješ */
+    background-size: cover;
+    color: #f0f6fc; 
+}
 
-/* GIGANTICKÁ 3D MINCE A DOKONALE VYSŘEDĚNÝ NADPIS */
+/* GIGANTICKÁ 3D MINCE A NOVÝ ZLATÝ NADPIS */
 .header-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 15px; margin-bottom: 30px; }
 .giant-btc-img { width: 100%; max-width: 320px; border-radius: 20px; box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4); margin-bottom: 15px; }
-.giant-title { font-size: 28px; font-weight: 900; letter-spacing: 2px; color: #f7931a; text-shadow: 0 2px 10px rgba(247,147,26,0.3); text-align: center; }
 
-/* MATICE A PRÉMIOVÉ 3D SRDCE */
-.matrix-card { background: linear-gradient(180deg, #0d131f 0%, #06080c 100%); border: 1px solid #1f2937; border-radius: 15px; padding: 20px; text-align: center; margin-bottom: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-@keyframes giant-pulse { 0% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.4)); } 15% { transform: scale(1.15); filter: drop-shadow(0 0 35px rgba(255, 50, 50, 0.8)); } 30% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.4)); } 45% { transform: scale(1.10); filter: drop-shadow(0 0 25px rgba(255, 50, 50, 0.6)); } 60% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.4)); } 100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.4)); } }
-.giant-heart { width: 110px; height: auto; animation: giant-pulse 1.4s infinite ease-in-out; margin: 20px 0; }
+/* LUXUSNÍ ZLATÝ TEXT MÍSTO OBYČEJNÉHO PÍSMA */
+.golden-text {
+    font-size: 32px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    text-align: center;
+    background: linear-gradient(to bottom, #ffe066 0%, #f7931a 50%, #994d00 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0px 4px 10px rgba(247, 147, 26, 0.5));
+    margin-left: 20px; /* Zarovnání na střed s obrázkem */
+}
 
-/* VÝSLEDKY S DOLAROVÝMI BANKOVKAMI */
-.money-journal { background: url('https://images.unsplash.com/photo-1605792657660-596af9009e82?q=80&w=800&auto=format&fit=crop') center/cover; border-radius: 15px; padding: 30px 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(39, 174, 96, 0.2); position: relative; overflow: hidden; border: 1px solid #1f7a43; }
-.money-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(4, 15, 8, 0.88); z-index: 1; }
-.money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; }
+/* MATICE A PRÉMIOVÉ 3D SRDCE (Z TVÉHO GITHUBŮ) JAKO POZADÍ */
+@keyframes heart-pulse-bg { 
+    0% { background-size: 110%; } 
+    50% { background-size: 130%; } 
+    100% { background-size: 110%; } 
+}
+
+.matrix-card { 
+    background-image: 
+        linear-gradient(rgba(4, 6, 9, 0.6), rgba(4, 6, 9, 0.9)), 
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_r.jpg');
+    background-position: center;
+    background-repeat: no-repeat;
+    animation: heart-pulse-bg 2.5s infinite ease-in-out;
+    border: 1px solid #1f2937; 
+    border-radius: 15px; 
+    padding: 30px 20px; 
+    text-align: center; 
+    margin-bottom: 10px; 
+    box-shadow: 0 10px 40px rgba(255, 0, 50, 0.3); 
+    position: relative;
+    overflow: hidden;
+}
+
+/* VÝSLEDKY S HROMADOU BANKOVEK (TEN NEONOVÝ OBRÁZEK Z CHATU) */
+.money-journal { 
+    /* Tento odkaz povede na bezpečný obrázek peněz, protože tvůj z fotky v GitHubu není */
+    background: url('https://images.unsplash.com/photo-1580519542036-c47de6196ba5?w=800&auto=format&fit=crop') center/cover; 
+    border-radius: 15px; 
+    padding: 30px 20px; 
+    text-align: center; 
+    margin-bottom: 20px; 
+    box-shadow: 0 10px 40px rgba(39, 174, 96, 0.4); 
+    position: relative; 
+    overflow: hidden; 
+    border: 1px solid #1f7a43; 
+}
+.money-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(2, 10, 5, 0.85); z-index: 1; }
+.money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; align-items: center; }
 
 /* SETUP KARTY A TLAČÍTKA */
-.alert-box { background: #0d131f; border: 1px solid #1f2937; padding: 20px; border-radius: 15px; margin-bottom: 16px; }
-.signal-triggered { background-color: #230c10 !important; border: 2px solid #f85149 !important; animation: pulse-alert 1s infinite alternate; }
+.alert-box { background: rgba(13, 19, 31, 0.8); border: 1px solid #1f2937; padding: 20px; border-radius: 15px; margin-bottom: 16px; backdrop-filter: blur(10px); }
+.signal-triggered { background-color: rgba(35, 12, 16, 0.9) !important; border: 2px solid #f85149 !important; animation: pulse-alert 1s infinite alternate; }
 @keyframes pulse-alert { 0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); } 100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); } }
-div.stButton > button { width: 100%; background: #111827; color: #f0f6fc !important; border: 1px solid #374151 !important; border-radius: 10px; padding: 15px; font-size: 15px !important; font-weight: 900 !important; margin-bottom: 10px; }
+div.stButton > button { width: 100%; background: rgba(17, 24, 39, 0.8); color: #f0f6fc !important; border: 1px solid #374151 !important; border-radius: 10px; padding: 15px; font-size: 15px !important; font-weight: 900 !important; margin-bottom: 10px; backdrop-filter: blur(5px); }
 div.stButton > button:hover { border-color: #f7931a !important; color: #f7931a !important; }
 
 /* Přepínač historie */
-div[role="radiogroup"] { background: #0d131f; border: 1px solid #1f2937; padding: 5px; border-radius: 10px; display: flex; justify-content: space-around; }
+div[role="radiogroup"] { background: rgba(13, 19, 31, 0.8); border: 1px solid #1f2937; padding: 5px; border-radius: 10px; display: flex; justify-content: space-around; backdrop-filter: blur(5px); }
 div[role="radiogroup"] label { font-weight: 800 !important; color: #c9d1d9 !important; }
 </style>
 
@@ -51,11 +101,11 @@ div[role="radiogroup"] label { font-weight: 800 !important; color: #c9d1d9 !impo
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 """, unsafe_allow_html=True)
 
-# --- 1. DOKONALE VYSŘEDĚNÁ HLAVIČKA BITCOINU ---
+# --- 1. HLAVIČKA S BITCOINEM A NOVÝM ZLATÝM NADPISEM ---
 st.markdown("""
 <div class="header-container">
 <img src="https://images.unsplash.com/photo-1621416894569-0f39ed31d247?q=80&w=800&auto=format&fit=crop" class="giant-btc-img">
-<div class="giant-title">BTC ORDER FLOW</div>
+<div class="golden-text">BTC ORDER FLOW</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -145,29 +195,26 @@ msg2, trg2 = scan_setup_2(c_96, okx_oi_chg)
 if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
 
-# --- MATICE S PRÉMIOVÝM SRDCEM MICROSOFT FLUENT 3D ---
 cvd_color = '#3fb950' if okx_cvd >= 0 else '#f85149'
 oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 
+# ZDE JE TVÉ SRDCE JAKO POZADÍ MATICE
 st.markdown(f"""
 <div class="matrix-card">
-<div style="color: #58a6ff; font-weight: 900; font-size: 18px; margin-bottom: 10px; letter-spacing: 2px;">OKX ORDER FLOW MATRIX</div>
-<!-- PRÉMIOVÉ 3D SRDCE -->
-<img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smilies/Red%20Heart.png" class="giant-heart">
-<div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 10px;">
+<div style="color: #ffffff; font-weight: 900; font-size: 18px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">OKX ORDER FLOW MATRIX</div>
+<div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 10px; position: relative; z-index: 5;">
 <div style="text-align: center;">
-<div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M CVD</div>
-<div style="font-size: 34px; font-weight: 900; color: {cvd_color};">{okx_cvd:+,.1f}</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">5M CVD</div>
+<div style="font-size: 40px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{okx_cvd:+,.1f}</div>
 </div>
 <div style="text-align: center;">
-<div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M OI</div>
-<div style="font-size: 34px; font-weight: 900; color: {oi_color};">{okx_oi_chg:+,.1f}</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">5M OI</div>
+<div style="font-size: 40px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{okx_oi_chg:+,.1f}</div>
 </div>
 </div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- PŘEPÍNAČ HISTORIE (15, 30, 45, 60 MINUT) ---
 tf = st.radio("Historie matice", ["15m", "30m", "45m", "60m"], horizontal=True, label_visibility="collapsed")
 if tf == "15m": n = 3
 elif tf == "30m": n = 6
@@ -183,7 +230,7 @@ cvd_str = " | ".join([f"{x:+.1f}" for x in sub_cvd])
 oi_str = " | ".join([f"{x:+.1f}" for x in sub_oi])
 
 st.markdown(f"""
-<div style="background: #0d131f; border: 1px solid #1f2937; border-radius: 15px; padding: 15px; text-align: center; margin-bottom: 20px;">
+<div style="background: rgba(13, 19, 31, 0.8); backdrop-filter: blur(5px); border: 1px solid #1f2937; border-radius: 15px; padding: 15px; text-align: center; margin-bottom: 20px;">
 <div style="color: #6e7681; font-size: 13px; font-weight: 900; text-transform: uppercase; margin-bottom: 8px;">DATA ZA POSLEDNÍCH {tf.upper()}</div>
 <div style="font-size: 16px; font-weight: 800; color: {'#3fb950' if sum_cvd >= 0 else '#f85149'}; margin-bottom: 4px;">KUMULATIVNÍ CVD: {sum_cvd:+.1f} BTC</div>
 <div style="font-size: 14px; font-weight: 700; color: #c9d1d9; word-wrap: break-word; line-height: 1.6; margin-bottom: 10px;">{cvd_str}</div>
@@ -192,7 +239,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- PŘEPÍNAČ SETUPŮ ---
 s_mode = st.radio("Mód:", ["⚡ Setup 1", "🎯 Setup 2"], horizontal=True, label_visibility="collapsed")
 if "Setup 1" in s_mode:
     st.markdown(f"""
@@ -209,10 +255,10 @@ else:
 </div>
 """, unsafe_allow_html=True)
 
-# --- VÝSLEDKY NA POZADÍ BANKOVEK ---
 pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
 pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
+# ZDE JE OBRÁZEK HROMADY BANKOVEK
 st.markdown(f"""
 <div class="money-journal">
 <div class="money-overlay"></div>
@@ -229,7 +275,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- SPODEK ---
 if st.button("🔄 AKTUALIZOVAT"): pass
 if st.toggle("⏱️ Auto Refresh (20s)", value=False):
     time.sleep(20)
