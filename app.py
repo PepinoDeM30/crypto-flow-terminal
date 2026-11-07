@@ -6,138 +6,128 @@ import time
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide")
 
 st.markdown("""
-    <style>
-    .stApp {
-        background-color: #040609;
-        color: #f0f6fc;
-    }
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 3rem !important;
-    }
-    
-    /* GIGANTICKÁ 3D MINCE A NADPIS */
-    .giant-header {
-        text-align: center;
-        margin-bottom: 30px;
-        position: relative;
-    }
-    .giant-btc-img {
-        width: 100%;
-        max-width: 350px;
-        border-radius: 20px;
-        box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4);
-        margin-bottom: -40px; /* Posune nadpis přes obrázek */
-        position: relative;
-        z-index: 1;
-    }
-    .giant-title {
-        font-size: 32px;
-        font-weight: 900;
-        letter-spacing: 2px;
-        color: #ffffff;
-        text-shadow: 0 5px 15px rgba(0,0,0,0.9), 0 2px 5px rgba(0,0,0,0.8);
-        position: relative;
-        z-index: 2;
-        background: rgba(0,0,0,0.4);
-        padding: 10px;
-        border-radius: 10px;
-        display: inline-block;
-    }
+<style>
+.stApp {
+    background-color: #040609;
+    color: #f0f6fc;
+}
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 3rem !important;
+}
 
-    /* MATICE S OBROVSKÝM SRDCEM */
-    .matrix-card {
-        background: linear-gradient(180deg, #0d131f 0%, #06080c 100%);
-        border: 1px solid #1f2937;
-        border-radius: 15px;
-        padding: 20px;
-        text-align: center;
-        margin-bottom: 20px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    }
-    @keyframes giant-pulse {
-        0% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
-        15% { transform: scale(1.2); filter: drop-shadow(0 0 35px rgba(255, 50, 50, 0.9)); }
-        30% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
-        45% { transform: scale(1.15); filter: drop-shadow(0 0 25px rgba(255, 50, 50, 0.7)); }
-        60% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
-        100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
-    }
-    .giant-heart {
-        width: 120px; /* OBROVSKÉ SRDCE */
-        height: auto;
-        animation: giant-pulse 1.3s infinite ease-in-out;
-        margin: 20px 0;
-    }
-    
-    /* VÝSLEDKY NA POZADÍ PENĚZ */
-    .money-journal {
-        background: url('https://images.unsplash.com/photo-1611928482473-7b27d24eab80?q=80&w=800&auto=format&fit=crop') center/cover;
-        border-radius: 15px;
-        padding: 30px 20px;
-        text-align: center;
-        margin-bottom: 20px;
-        box-shadow: 0 10px 30px rgba(39, 174, 96, 0.3);
-        position: relative;
-        overflow: hidden;
-    }
-    /* Tmavý filtr přes peníze, aby šla přečíst čísla */
-    .money-overlay {
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(4, 20, 10, 0.85);
-        z-index: 1;
-    }
-    .money-content {
-        position: relative;
-        z-index: 2;
-    }
+/* GIGANTICKÁ 3D MINCE A NADPIS */
+.giant-header {
+    text-align: center;
+    margin-bottom: 30px;
+}
+.giant-btc-img {
+    width: 100%;
+    max-width: 320px;
+    border-radius: 20px;
+    box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4);
+    margin-bottom: 20px;
+}
+.giant-title {
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    color: #f7931a;
+    text-shadow: 0 2px 10px rgba(247,147,26,0.3);
+}
 
-    /* KARTY SETUP 1 A SETUP 2 */
-    .alert-box {
-        background: #0d131f;
-        border: 1px solid #1f2937;
-        padding: 20px;
-        border-radius: 15px;
-        margin-bottom: 16px;
-    }
-    .signal-triggered {
-        background-color: #230c10 !important;
-        border: 2px solid #f85149 !important;
-        animation: pulse-alert 1s infinite alternate;
-    }
-    @keyframes pulse-alert {
-        0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); }
-        100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); }
-    }
+/* MATICE S OBROVSKÝM SRDCEM */
+.matrix-card {
+    background: linear-gradient(180deg, #0d131f 0%, #06080c 100%);
+    border: 1px solid #1f2937;
+    border-radius: 15px;
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+@keyframes giant-pulse {
+    0% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
+    15% { transform: scale(1.2); filter: drop-shadow(0 0 35px rgba(255, 50, 50, 0.9)); }
+    30% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
+    45% { transform: scale(1.15); filter: drop-shadow(0 0 25px rgba(255, 50, 50, 0.7)); }
+    60% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
+    100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(255, 50, 50, 0.5)); }
+}
+.giant-heart {
+    width: 120px;
+    height: auto;
+    animation: giant-pulse 1.3s infinite ease-in-out;
+    margin: 20px 0;
+}
 
-    /* SPODNÍ TLAČÍTKA */
-    div.stButton > button {
-        width: 100%;
-        background: #111827;
-        color: #f0f6fc !important;
-        border: 1px solid #374151 !important;
-        border-radius: 10px;
-        padding: 15px;
-        font-size: 15px !important;
-        font-weight: 900 !important;
-    }
-    div.stButton > button:hover {
-        border-color: #f7931a !important;
-        color: #f7931a !important;
-    }
-    </style>
+/* VÝSLEDKY NA POZADÍ PENĚZ */
+.money-journal {
+    background: url('https://images.unsplash.com/photo-1611928482473-7b27d24eab80?q=80&w=800&auto=format&fit=crop') center/cover;
+    border-radius: 15px;
+    padding: 30px 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(39, 174, 96, 0.3);
+    position: relative;
+    overflow: hidden;
+}
+.money-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(4, 20, 10, 0.85);
+    z-index: 1;
+}
+.money-content {
+    position: relative;
+    z-index: 2;
+}
+
+/* KARTY SETUP 1 A SETUP 2 */
+.alert-box {
+    background: #0d131f;
+    border: 1px solid #1f2937;
+    padding: 20px;
+    border-radius: 15px;
+    margin-bottom: 16px;
+}
+.signal-triggered {
+    background-color: #230c10 !important;
+    border: 2px solid #f85149 !important;
+    animation: pulse-alert 1s infinite alternate;
+}
+@keyframes pulse-alert {
+    0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); }
+    100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); }
+}
+
+/* SPODNÍ TLAČÍTKA */
+div.stButton > button {
+    width: 100%;
+    background: #111827;
+    color: #f0f6fc !important;
+    border: 1px solid #374151 !important;
+    border-radius: 10px;
+    padding: 15px;
+    font-size: 15px !important;
+    font-weight: 900 !important;
+}
+div.stButton > button:hover {
+    border-color: #f7931a !important;
+    color: #f7931a !important;
+}
+</style>
 """, unsafe_allow_html=True)
 
 # --- 1. GIGANTICKÁ 3D HLAVIČKA BITCOINU ---
 st.markdown("""
-    <div class="giant-header">
-        <img src="https://images.unsplash.com/photo-1621416894569-0f39ed31d247?q=80&w=800&auto=format&fit=crop" class="giant-btc-img">
-        <div class="giant-title">BTC ORDER FLOW</div>
-    </div>
+<div class="giant-header">
+    <img src="https://images.unsplash.com/photo-1621416894569-0f39ed31d247?q=80&w=800&auto=format&fit=crop" class="giant-btc-img">
+    <div class="giant-title">BTC ORDER FLOW</div>
+</div>
 """, unsafe_allow_html=True)
 
-# --- 2. GOOGLE SHEETS (NAČTENÍ Z ŘÁDKU 18) ---
+# --- 2. GOOGLE SHEETS ---
 @st.cache_data(ttl=30)
 def load_trading_data():
     try:
@@ -230,53 +220,66 @@ if trg1 or trg2:
 c1, c2, c3 = (cvd_12[-3], cvd_12[-2], cvd_12[-1]) if len(cvd_12) >= 3 else (0, 0, 0)
 o1, o2, o3 = (oi_3[0], oi_3[1], oi_3[2]) if len(oi_3) >= 3 else (0, 0, 0)
 
+cvd_color = '#3fb950' if okx_cvd >= 0 else '#f85149'
+oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
+
 st.markdown(f"""
-    <div class="matrix-card">
-        <div style="color: #58a6ff; font-weight: 900; font-size: 18px; margin-bottom: 10px; letter-spacing: 2px;">OKX ORDER FLOW MATRIX</div>
-        
-        <!-- OBROVSKÉ CENTRÁLNÍ SRDCE -->
-        <img src="https://cdn.pixabay.com/photo/2017/02/09/16/59/heart-2052845_960_720.png" class="giant-heart">
-        
-        <div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 20px;">
-            <div style="text-align: center;">
-                <div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M CVD</div>
-                <div style="font-size: 32px; font-weight: 900; color: {'#3fb950' if okx_cvd >= 0 else '#f85149'};">{okx_cvd:+,.1f}</div>
-            </div>
-            <div style="text-align: center;">
-                <div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M OI</div>
-                <div style="font-size: 32px; font-weight: 900; color: {'#3fb950' if okx_oi_chg >= 0 else '#f85149'};">{okx_oi_chg:+,.1f}</div>
-            </div>
+<div class="matrix-card">
+    <div style="color: #58a6ff; font-weight: 900; font-size: 18px; margin-bottom: 10px; letter-spacing: 2px;">OKX ORDER FLOW MATRIX</div>
+    
+    <img src="https://cdn.pixabay.com/photo/2017/02/09/16/59/heart-2052845_960_720.png" class="giant-heart">
+    
+    <div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 20px;">
+        <div style="text-align: center;">
+            <div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M CVD</div>
+            <div style="font-size: 32px; font-weight: 900; color: {cvd_color};">{okx_cvd:+,.1f}</div>
         </div>
-        <div style="color: #6e7681; font-size: 12px; font-weight: 800; text-transform: uppercase;">Posledních 15 minut</div>
-        <div style="font-size: 14px; font-weight: 700; color: #c9d1d9;">CVD: {c1:+.1f} | {c2:+.1f} | {c3:+.1f}</div>
-        <div style="font-size: 14px; font-weight: 700; color: #c9d1d9;">OI: {o1:+.1f} | {o2:+.1f} | {o3:+.1f}</div>
+        <div style="text-align: center;">
+            <div style="color: #94a3b8; font-size: 13px; font-weight: 800; letter-spacing: 1px;">5M OI</div>
+            <div style="font-size: 32px; font-weight: 900; color: {oi_color};">{okx_oi_chg:+,.1f}</div>
+        </div>
     </div>
+    <div style="color: #6e7681; font-size: 12px; font-weight: 800; text-transform: uppercase;">Posledních 15 minut</div>
+    <div style="font-size: 14px; font-weight: 700; color: #c9d1d9;">CVD: {c1:+.1f} | {c2:+.1f} | {c3:+.1f}</div>
+    <div style="font-size: 14px; font-weight: 700; color: #c9d1d9;">OI: {o1:+.1f} | {o2:+.1f} | {o3:+.1f}</div>
+</div>
 """, unsafe_allow_html=True)
 
 # --- PŘEPÍNAČ SETUPŮ ---
 s_mode = st.radio("Mód:", ["⚡ Setup 1: Absorpce", "🎯 Setup 2: SFP"], horizontal=True, label_visibility="collapsed")
 if "Setup 1" in s_mode:
-    st.markdown(f'<div class="alert-box {"signal-triggered" if trg1 else ""}"><div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1</div><div style="color: #c9d1d9; font-size: 15px; margin-top: 5px;">{msg1}</div></div>', unsafe_allow_html=True)
+    st.markdown(f"""
+<div class="alert-box {"signal-triggered" if trg1 else ""}">
+    <div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1</div>
+    <div style="color: #c9d1d9; font-size: 15px; margin-top: 5px;">{msg1}</div>
+</div>
+""", unsafe_allow_html=True)
 else:
-    st.markdown(f'<div class="alert-box {"signal-triggered" if trg2 else ""}"><div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2</div><div style="color: #c9d1d9; font-size: 15px; margin-top: 5px;">{msg2}</div></div>', unsafe_allow_html=True)
+    st.markdown(f"""
+<div class="alert-box {"signal-triggered" if trg2 else ""}">
+    <div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2</div>
+    <div style="color: #c9d1d9; font-size: 15px; margin-top: 5px;">{msg2}</div>
+</div>
+""", unsafe_allow_html=True)
 
 # --- 5. VÝSLEDKY NA OBROVSKÉM FOTO-POZADÍ 3D BANKOVEK ---
+pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
+pnl_sign = '+$' if total_pnl >= 0 else '-$'
+
 st.markdown(f"""
-    <div class="money-journal">
-        <div class="money-overlay"></div>
-        <div class="money-content" style="display: flex; justify-content: space-around;">
-            <div>
-                <div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px;">CELKOVÝ PNL</div>
-                <div style="font-size: 40px; font-weight: 900; color: {'#3fb950' if total_pnl >= 0 else '#f85149'};">
-                    {('+$' if total_pnl >= 0 else '-$')}{abs(total_pnl):,.2f}
-                </div>
-            </div>
-            <div>
-                <div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px;">WIN RATE</div>
-                <div style="font-size: 40px; font-weight: 900; color: #f1e05a;">{win_rate:.2f} %</div>
-            </div>
+<div class="money-journal">
+    <div class="money-overlay"></div>
+    <div class="money-content" style="display: flex; justify-content: space-around;">
+        <div>
+            <div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px;">CELKOVÝ PNL</div>
+            <div style="font-size: 32px; font-weight: 900; color: {pnl_color};">{pnl_sign}{abs(total_pnl):,.2f}</div>
+        </div>
+        <div>
+            <div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px;">WIN RATE</div>
+            <div style="font-size: 32px; font-weight: 900; color: #f1e05a;">{win_rate:.2f} %</div>
         </div>
     </div>
+</div>
 """, unsafe_allow_html=True)
 
 # --- SPODEK ---
