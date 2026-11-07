@@ -2,8 +2,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import time
-from datetime import datetime
-import pytz
+from datetime import datetime, timezone, timedelta
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
@@ -175,15 +174,15 @@ def scan_setup_2(candles_300, candles_1d, oi_data, btc_price):
         if len(candles_1d) >= 2:
             pdh, pdl = float(candles_1d[1][2]), float(candles_1d[1][3])
 
-        # 2. Získání Asie a Londýna přesný čas (Praha)
-        prague_tz = pytz.timezone('Europe/Prague')
-        current_date = datetime.now(prague_tz).date()
+        # 2. Získání Asie a Londýna přesný čas (Praha = UTC+1, v létě UTC+2. Použijeme jednoduchý fixní offset +1h pro stabilitu)
+        tz_offset = timezone(timedelta(hours=1)) # Nativní Python časová zóna
+        current_date = datetime.now(tz_offset).date()
 
         asia_h, asia_l = 0.0, float('inf')
         lon_h, lon_l = 0.0, float('inf')
 
         for c in candles_300:
-            dt = datetime.fromtimestamp(int(c[0])/1000, prague_tz)
+            dt = datetime.fromtimestamp(int(c[0])/1000, tz_offset)
             if dt.date() != current_date:
                 continue
             h = dt.hour
