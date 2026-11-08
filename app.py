@@ -35,66 +35,71 @@ footer {visibility: hidden !important; display: none !important;}
 [data-testid="stAppViewBlockContainer"] {
     padding-top: 0rem !important; 
     padding-bottom: 1.5rem !important; 
-    padding-left: 0.6rem !important; 
-    padding-right: 0.6rem !important;
-    margin-top: -20px !important;
+    padding-left: 0.4rem !important; 
+    padding-right: 0.4rem !important;
+    margin-top: -55px !important;
 }
 iframe[height="0"] {display: none !important;}
 
-/* CELKOVÉ POZADÍ APLIKACE: PULZUJÍCÍ 3D SRDCE */
+/* OBŘÍ PULZUJÍCÍ 3D SRDCE PŘES CELÝ MOBILNÍ DISPLEJ */
 @keyframes app-heart-pulse { 
-    0% { background-size: 105%; } 
-    50% { background-size: 120%; } 
-    100% { background-size: 105%; } 
+    0% { background-size: 230% auto; } 
+    50% { background-size: 260% auto; } 
+    100% { background-size: 230% auto; } 
 }
 .stApp { 
     background-color: #040609; 
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.55), rgba(4, 6, 9, 0.88)), 
+        linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.72)), 
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_ruby_red_neon_heart.jpg');
     background-attachment: fixed;
-    background-position: center;
+    background-position: center 45%;
     background-repeat: no-repeat;
     animation: app-heart-pulse 3.5s infinite ease-in-out;
     color: #f0f6fc; 
 }
 
-/* HLAVNÍ 3D TITUL BTC VYTAŽENÝ CO NEJVÍC NAHORU A MAXIMÁLNĚ ZVĚTŠENÝ */
+/* MAXIMÁLNÍ ZLATÝ TITUL BTC ORDER FLOW ÚPLNĚ NAHOŘE OD KRAJE KE KRAJI */
 .header-container { 
     display: flex; 
     flex-direction: column; 
     align-items: center; 
     justify-content: center; 
-    margin-top: -15px; 
-    margin-bottom: 12px; 
+    margin-top: 0px; 
+    margin-bottom: 14px; 
+    margin-left: -6px;
+    margin-right: -6px;
     position: relative;
 }
 .giant-btc-img { 
-    width: 100%; 
-    max-width: 520px; 
-    border-radius: 18px; 
-    box-shadow: 0 12px 35px rgba(247, 147, 26, 0.45); 
+    width: 100vw; 
+    max-width: 100%; 
+    height: 235px;
+    object-fit: cover;
+    object-position: center 55%;
+    border-radius: 0 0 22px 22px; 
+    box-shadow: 0 12px 35px rgba(247, 147, 26, 0.55); 
     display: block;
 }
 
 /* FUTURISTICKÁ CENA BTC UVNITŘ HLAVIČKY (BEZ CENTŮ) */
 .cyber-price-box {
-    margin-top: -34px;
-    background: rgba(4, 8, 16, 0.88);
-    border: 1.5px solid #00f3ff;
-    border-radius: 12px;
-    padding: 4px 28px;
-    box-shadow: 0 0 22px rgba(0, 243, 255, 0.55), inset 0 0 12px rgba(0, 243, 255, 0.25);
+    margin-top: -38px;
+    background: rgba(4, 8, 16, 0.90);
+    border: 2px solid #00f3ff;
+    border-radius: 14px;
+    padding: 5px 34px;
+    box-shadow: 0 0 25px rgba(0, 243, 255, 0.65), inset 0 0 12px rgba(0, 243, 255, 0.3);
     backdrop-filter: blur(8px);
     z-index: 10;
 }
 .cyber-price-text {
     font-family: 'Orbitron', sans-serif;
-    font-size: 36px;
+    font-size: 38px;
     font-weight: 900;
     color: #00f3ff;
     letter-spacing: 5px;
-    text-shadow: 0 0 12px #00f3ff, 0 0 25px rgba(0, 243, 255, 0.8);
+    text-shadow: 0 0 14px #00f3ff, 0 0 28px rgba(0, 243, 255, 0.85);
     line-height: 1.1;
 }
 
@@ -108,7 +113,7 @@ iframe[height="0"] {display: none !important;}
     border: 1px solid #2dd4bf; 
     border-bottom: none;
     border-radius: 16px 16px 0 0; 
-    padding: 22px 16px 14px 16px; 
+    padding: 20px 15px 14px 15px; 
     text-align: center; 
     margin-bottom: 0px; 
     box-shadow: 0 -6px 30px rgba(0, 243, 255, 0.15); 
@@ -125,16 +130,16 @@ iframe[height="0"] {display: none !important;}
     border: 1px solid #2dd4bf;
     border-top: none;
     border-radius: 0 0 16px 16px;
-    padding: 12px 16px 20px 16px;
+    padding: 12px 15px 18px 15px;
     text-align: center;
     margin-top: -16px;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
     box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);
     position: relative;
     overflow: hidden;
 }
 
-/* PŘEPÍNAČE (15m/30m/45m/60m A SETUP 1/2) */
+/* PŘEPÍNAČE */
 div[role="radiogroup"] { 
     background: rgba(7, 11, 19, 0.92); 
     border-left: 1px solid #2dd4bf; 
@@ -335,7 +340,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         current_date = now_prague.date()
         yesterday_date = current_date - timedelta(days=1)
 
-        # 1. Výpočet včerejšího PDH a PDL (00:00 - 23:59 UTC+1)
         pdh, pdl = 0.0, float('inf')
         for c in candles_1h:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
@@ -344,7 +348,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
                 pdl = min(pdl, float(c[3]))
         if pdh == 0.0: pdh, pdl = 0.0, 0.0
 
-        # 2. Výpočet dnešní Asie (01:00 - 07:00) a Londýna (09:00 - 14:00) ze svíček před c2
         asia_h, asia_l = 0.0, float('inf')
         lon_h, lon_l = 0.0, float('inf')
 
@@ -363,8 +366,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         if asia_h == 0.0: asia_h, asia_l = 0.0, 0.0
         if lon_h == 0.0: lon_h, lon_l = 0.0, 0.0
 
-        # 3. Kontrola, zda už level nebyl vybrán (swept) dříve během dneška před svíčkou c2
-        # PDH/PDL platí od 00:00, Asia H/L po uzavření Asie (od 07:00), London H/L po uzavření Londýna (od 14:00)
         raw_levels = [
             ("PDH", pdh, True, 0),
             ("PDL", pdl, False, 0),
@@ -393,7 +394,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
             if val <= 0:
                 continue
 
-            # Zjistíme, zda některá ze starších dnešních svíček (candles_300[3:]) po zafixování levelu už hladinu nepropíchla
             already_swept_before_c2 = False
             for c in candles_300[3:]:
                 dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
@@ -407,11 +407,9 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
                         already_swept_before_c2 = True
                         break
 
-            # Pokud byl level vybrán už dříve během dne, úplně ho vymažeme ze seznamu i ze skeneru
             if already_swept_before_c2:
                 continue
 
-            # Pokud nebyl vybrán dříve, zkontrolujeme, zda ho PRÁVĚ TEĎ poprvé propíchla svíčka c2
             dt_c2 = datetime.fromtimestamp(int(c2[0]) / 1000, tz_offset)
             if dt_c2.date() == current_date and dt_c2.hour >= valid_from_hour:
                 if is_high and c2_high >= val:
@@ -429,7 +427,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
                         triggered_msg = f"👀 {name} ({val:.0f}) poprvé dotknuto. OI: {oi_change:.1f} BTC."
                     continue
 
-            # Pokud ho propíchla až svíčka c1 nebo c0 (po c2), vyřadíme ho ze seznamu aktivních čekajících levelů
             dt_c1 = datetime.fromtimestamp(int(c1[0]) / 1000, tz_offset)
             if dt_c1.date() == current_date and dt_c1.hour >= valid_from_hour:
                 if (is_high and (c1_high >= val or c0_high >= val)) or (not is_high and (c1_low <= val or c0_low <= val)):
@@ -459,50 +456,45 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. HLAVNÍ 3D TITUL BTC CO NEJVÍC NAHOŘE + FUTURISTICKÁ CENA BEZ CENTŮ (např. 76334)
+# 1. HLAVNÍ 3D TITUL BTC CO NEJVÍC NAHOŘE A MAXIMÁLNĚ VELKÝ + CENA BEZ CENTŮ
 st.markdown(f"""
 <div class="header-container">
-    <img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
-    <div class="cyber-price-box">
-        <div class="cyber-price-text">{b_price:.0f}</div>
-    </div>
+<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
+<div class="cyber-price-box">
+<div class="cyber-price-text">{b_price:.0f}</div>
+</div>
 </div>
 """, unsafe_allow_html=True)
 
-# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR
+# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR (BEZ ODSAZENÍ)
 st.markdown(f"""
 <div class="matrix-unified-top">
-    <div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 18px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
-    
-    <div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 18px;">
-        <div style="text-align: center;">
-            <div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M CVD</div>
-            <div style="font-size: 38px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_cvd:+,.1f}</div>
-        </div>
-        <div style="text-align: center;">
-            <div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M OI</div>
-            <div style="font-size: 38px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_oi_chg:+,.1f}</div>
-        </div>
-    </div>
-
-    <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 14px; margin-top: 10px;">
-        <div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">LIQUIDITY & RETAIL RADAR (± 200 USD | 10$ BLOKY)</div>
-        
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px;">
-            <span style="font-weight: 800; color: #e2e8f0;">L/S Účty:</span>
-            <span><strong style="color: #3fb950;">{ls_ratio:.0f}% LONG</strong> <span style="color: #6e7681;">|</span> <strong style="color: #f85149;">{100 - ls_ratio:.0f}% SHORT</strong></span>
-        </div>
-        
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px;">
-            <span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±200$):</span>
-            <span style="font-weight: 900; color: {imb_color};">{imb_vol:+,.1f} BTC ({imb_text})</span>
-        </div>
-        
-        <div style="display: flex; justify-content: space-between; font-size: 13px; background: rgba(4, 6, 9, 0.65); padding: 8px 12px; border-radius: 8px;">
-            <div style="text-align: left;"><span style="color: #f85149; font-weight: 900;">🔴 Ask Zeď:</span> <strong>{ask_v:.1f} BTC</strong> na {ask_p:.0f}</div>
-            <div style="text-align: right;"><span style="color: #3fb950; font-weight: 900;">🟢 Bid Zeď:</span> <strong>{bid_v:.1f} BTC</strong> na {bid_p:.0f}</div>
-        </div>
-    </div>
+<div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 18px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
+<div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 18px;">
+<div style="text-align: center;">
+<div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M CVD</div>
+<div style="font-size: 38px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_cvd:+,.1f}</div>
+</div>
+<div style="text-align: center;">
+<div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M OI</div>
+<div style="font-size: 38px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_oi_chg:+,.1f}</div>
+</div>
+</div>
+<div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 14px; margin-top: 10px;">
+<div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">LIQUIDITY & RETAIL RADAR (± 200 USD | 10$ BLOKY)</div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px;">
+<span style="font-weight: 800; color: #e2e8f0;">L/S Účty:</span>
+<span><strong style="color: #3fb950;">{ls_ratio:.0f}% LONG</strong> <span style="color: #6e7681;">|</span> <strong style="color: #f85149;">{100 - ls_ratio:.0f}% SHORT</strong></span>
+</div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px;">
+<span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±200$):</span>
+<span style="font-weight: 900; color: {imb_color};">{imb_vol:+,.1f} BTC ({imb_text})</span>
+</div>
+<div style="display: flex; justify-content: space-between; font-size: 13px; background: rgba(4, 6, 9, 0.65); padding: 8px 12px; border-radius: 8px;">
+<div style="text-align: left;"><span style="color: #f85149; font-weight: 900;">🔴 Ask Zeď:</span> <strong>{ask_v:.1f} BTC</strong> na {ask_p:.0f}</div>
+<div style="text-align: right;"><span style="color: #3fb950; font-weight: 900;">🟢 Bid Zeď:</span> <strong>{bid_v:.1f} BTC</strong> na {bid_p:.0f}</div>
+</div>
+</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -523,11 +515,11 @@ oi_str = " | ".join([f"{x:+.1f}" for x in sub_oi])
 # 4. SPODNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: HISTORIE ZA 15m/30m/45m/60m
 st.markdown(f"""
 <div class="matrix-unified-bottom">
-    <div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">DATA ZA POSLEDNÍCH {tf.upper()}</div>
-    <div style="font-size: 16px; font-weight: 900; color: {'#3fb950' if sum_cvd >= 0 else '#f85149'}; margin-bottom: 3px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">KUMULATIVNÍ CVD: {sum_cvd:+.1f} BTC</div>
-    <div style="font-size: 13px; font-weight: 700; color: #e2e8f0; word-wrap: break-word; line-height: 1.5; margin-bottom: 10px;">{cvd_str}</div>
-    <div style="font-size: 16px; font-weight: 900; color: {'#3fb950' if sum_oi >= 0 else '#f85149'}; margin-bottom: 3px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">KUMULATIVNÍ OI: {sum_oi:+.1f} BTC</div>
-    <div style="font-size: 13px; font-weight: 700; color: #e2e8f0; word-wrap: break-word; line-height: 1.5;">{oi_str}</div>
+<div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">DATA ZA POSLEDNÍCH {tf.upper()}</div>
+<div style="font-size: 16px; font-weight: 900; color: {'#3fb950' if sum_cvd >= 0 else '#f85149'}; margin-bottom: 3px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">KUMULATIVNÍ CVD: {sum_cvd:+.1f} BTC</div>
+<div style="font-size: 13px; font-weight: 700; color: #e2e8f0; word-wrap: break-word; line-height: 1.5; margin-bottom: 10px;">{cvd_str}</div>
+<div style="font-size: 16px; font-weight: 900; color: {'#3fb950' if sum_oi >= 0 else '#f85149'}; margin-bottom: 3px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">KUMULATIVNÍ OI: {sum_oi:+.1f} BTC</div>
+<div style="font-size: 13px; font-weight: 700; color: #e2e8f0; word-wrap: break-word; line-height: 1.5;">{oi_str}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -536,16 +528,16 @@ s_mode = st.radio("Mód:", ["⚡ Setup 1", "🎯 Setup 2"], horizontal=True, lab
 if "Setup 1" in s_mode:
     st.markdown(f"""
 <div class="alert-box {"signal-triggered" if trg1 else ""}">
-    <div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1: ABSORPCE</div>
-    <div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg1}</div>
+<div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1: ABSORPCE</div>
+<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg1}</div>
 </div>
 """, unsafe_allow_html=True)
 else:
     st.markdown(f"""
 <div class="alert-box {"signal-triggered" if trg2 else ""}">
-    <div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
-    <div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg2}</div>
-    <div style="color: #00f3ff; font-size: 13px; margin-top: 10px; font-weight: 800;">Zbývající aktivní levely: {l_str}</div>
+<div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
+<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg2}</div>
+<div style="color: #00f3ff; font-size: 13px; margin-top: 10px; font-weight: 800;">Zbývající aktivní levely: {l_str}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -555,16 +547,16 @@ pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
 st.markdown(f"""
 <div class="money-journal">
-    <div class="money-content">
-        <div style="text-align: center;">
-            <div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">CELKOVÝ PNL</div>
-            <div style="font-size: 34px; font-weight: 900; color: {pnl_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{pnl_sign}{abs(total_pnl):,.2f}</div>
-        </div>
-        <div style="text-align: center;">
-            <div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">WIN RATE</div>
-            <div style="font-size: 34px; font-weight: 900; color: #f1e05a; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
-        </div>
-    </div>
+<div class="money-content">
+<div style="text-align: center;">
+<div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">CELKOVÝ PNL</div>
+<div style="font-size: 34px; font-weight: 900; color: {pnl_color}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{pnl_sign}{abs(total_pnl):,.2f}</div>
+</div>
+<div style="text-align: center;">
+<div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">WIN RATE</div>
+<div style="font-size: 34px; font-weight: 900; color: #f1e05a; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
+</div>
+</div>
 </div>
 """, unsafe_allow_html=True)
 
