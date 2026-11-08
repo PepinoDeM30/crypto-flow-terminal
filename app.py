@@ -65,7 +65,7 @@ iframe[height="0"] {display: none !important;}
     margin-left: calc(-50vw + 50%);
     background-image: 
         linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.45)), 
-        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_golden_Bi%20(1).jpg');
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');
     background-position: center center;
     background-size: cover;
     background-repeat: no-repeat;
@@ -218,7 +218,7 @@ def get_market_radar(btc_price, ts):
         bids = book.get("bids", [])
         asks = book.get("asks", [])
         
-        # AKTUALIZOVÁNO NA ±400 USD (0,50%)
+        # AKTUALIZOVÁNO NA ±400 USD
         lower_bound = btc_price - 400
         upper_bound = btc_price + 400
         
@@ -302,7 +302,7 @@ def scan_setup_1(candles_300, cvd_series_12):
             if min(b_lows) == 0: continue
             r_pct = ((max(b_highs) - min(b_lows)) / min(b_lows)) * 100
             
-            # OPRAVA ZPĚT NA 0.25% - SETUP 1 ZŮSTÁVÁ NEDOTČEN
+            # PŘESNĚ JAK MÁ BÝT: 0.25% ZÁMEK PRO SETUP 1
             if r_pct <= 0.25:
                 cum_cvd = sum(cvd_series_12[-length:])
                 if best_w is None or abs(cum_cvd) > abs(best_w["cvd"]): best_w = {"len": length, "pct": r_pct, "cvd": cum_cvd}
@@ -439,7 +439,7 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. OBŘÍ ZLATÝ BTC BANNER (ČISTÝ OBRÁZEK)
+# 1. OBŘÍ ZLATÝ BTC BANNER (Odkaz OPRAVEN)
 st.markdown(f"""
 <div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
