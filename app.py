@@ -123,21 +123,22 @@ iframe[height="0"] {display: none !important;}
     box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);
 }
 
-/* SETUP KARTY - Pevná, shodná výška a poloprůhledné pozadí (OPRAVENO PRO LEPŠÍ VIDITELNOST BANKOVEK) */
+/* SETUP KARTY - Vycentrované texty a jednotná výška */
 .alert-box { 
-    background: rgba(13, 19, 31, 0.35); /* Snížená neprůhlednost z 0.65 na 0.35 */
+    background: rgba(13, 19, 31, 0.35); 
     border: 1px solid rgba(31, 41, 55, 0.6); 
     padding: 16px; 
     border-radius: 15px; 
     margin-bottom: 12px; 
-    backdrop-filter: blur(1px); /* Téměř vypnuté rozmazání, aby bankovky prosvítaly ostře */
+    backdrop-filter: blur(1px); 
     height: 125px;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    text-align: center;
 }
 .signal-triggered { 
-    background-color: rgba(35, 12, 16, 0.55) !important; /* Větší průhlednost i pro spuštěný alert */
+    background-color: rgba(35, 12, 16, 0.55) !important; 
     border: 2px solid #f85149 !important; 
     animation: pulse-alert 1s infinite alternate; 
 }
@@ -221,23 +222,27 @@ def get_market_radar(btc_price, ts):
         
         sum_bids, sum_asks = 0.0, 0.0
         
+        # Sběr Asků s opravenou logikou pásem
         for a in asks:
             p, v = float(a[0]), float(a[1])
             if p <= btc_price + 400:
                 vol = (v * 100) / p
                 sum_asks += vol
-                if p <= btc_price + 100: ask_v1 += vol
-                elif p <= btc_price + 200: ask_v2 += vol
-                elif p <= btc_price + 300: ask_v3 += vol
+                dist = p - btc_price
+                if dist <= 100: ask_v1 += vol
+                elif dist <= 200: ask_v2 += vol
+                elif dist <= 400: ask_v3 += vol
                 
+        # Sběr Bidů s opravenou logikou pásem (již nebude padat do nuly)
         for b in bids:
             p, v = float(b[0]), float(b[1])
-            if p >= btc_price - 400.1:
+            if p >= btc_price - 400:
                 vol = (v * 100) / p
                 sum_bids += vol
-                if p >= btc_price - 100.1: bid_v1 += vol
-                elif p >= btc_price - 200.1: bid_v2 += vol
-                elif p >= btc_price - 300.1: bid_v3 += vol
+                dist = btc_price - p
+                if dist <= 100: bid_v1 += vol
+                elif dist <= 200: bid_v2 += vol
+                elif dist <= 400: bid_v3 += vol
                 
         imb_vol = sum_bids - sum_asks
     except Exception:
@@ -447,13 +452,13 @@ st.markdown(f"""
 <div class="matrix-unified">
 <div style="color: #ffffff; font-weight: 900; font-size: 20px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
 <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px; align-items: center; margin-bottom: 18px;">
-<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
 <div></div>
 <div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v1:.0f}</div>
 <div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v2:.0f}</div>
 <div class="matrix-live-price">{b_price:.0f}</div>
 <div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v2:.0f}</div>
-<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
 <div></div>
 <div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v3:.0f}</div>
 </div>
@@ -480,7 +485,7 @@ st.markdown(f"""
 <div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>
 </div>
 <div class="alert-box {"signal-triggered" if trg2 else ""}" style="margin-bottom: 0;">
-<div style="color: #a371f7; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
+<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP</div>
 <div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>
 <div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>
 </div>
