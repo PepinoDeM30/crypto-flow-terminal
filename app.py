@@ -59,13 +59,13 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU S CENOU NA SPODNÍM OKRAJI */
+/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU (ČISTÝ) */
 .gold-btc-banner {
     width: 100vw;
     margin-left: calc(-50vw + 50%);
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.65)), 
-        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');
+        linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.45)), 
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_golden_Bi%20(1).jpg');
     background-position: center center;
     background-size: cover;
     background-repeat: no-repeat;
@@ -73,25 +73,24 @@ iframe[height="0"] {display: none !important;}
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-end; /* Přitlačí obsah dolů na samý okraj */
-    padding-bottom: 15px; /* Přesně na spodní okraj obdélníku */
+    justify-content: flex-end;
+    padding-bottom: 25px;
     margin-bottom: 25px;
     box-shadow: 0 15px 45px rgba(0, 0, 0, 0.85);
     border-bottom: 2px solid rgba(247, 147, 26, 0.4);
 }
 
-/* ŽIVÁ CENA VE ZLATÉM 3D STYLU SHODNÉM S NÁPISEM ORDER FLOW */
-.gold-live-price {
+/* ŽIVÁ CENA HNED POD NADPISEM V MATICI (NEUTRÁLNÍ STYL) */
+.matrix-live-price {
     font-family: 'Orbitron', sans-serif;
-    font-size: 50px;
+    font-size: 40px;
     font-weight: 900;
-    color: #ffdf00;
-    letter-spacing: 6px;
-    background: linear-gradient(180deg, #fff3a8 0%, #f7b733 50%, #fc4a1a 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    text-shadow: 0 3px 10px rgba(0, 0, 0, 0.95), 0 0 20px rgba(247, 147, 26, 0.6);
-    line-height: 1;
+    color: #f0f6fc;
+    letter-spacing: 5px;
+    text-align: center;
+    text-shadow: 0 0 12px rgba(0, 243, 255, 0.4), 0 2px 5px rgba(0, 0, 0, 1);
+    margin-top: 10px;
+    margin-bottom: 22px;
 }
 
 /* JEDINÝ VELKÝ OBDÉLNÍK OKX ORDER FLOW MATRIX S PADAJÍCÍMI DOLARY UVNITŘ */
@@ -104,7 +103,7 @@ iframe[height="0"] {display: none !important;}
     border: 1px solid #2dd4bf; 
     border-bottom: none;
     border-radius: 16px 16px 0 0; 
-    padding: 20px 15px 14px 15px; 
+    padding: 20px 15px 16px 15px; 
     text-align: center; 
     margin-bottom: 0px; 
     box-shadow: 0 -6px 30px rgba(0, 243, 255, 0.15); 
@@ -202,17 +201,7 @@ def get_okx_candles(bar, limit, ts):
     return []
 
 def get_market_radar(btc_price, ts):
-    ls_ratio = 50.0
     imb_vol, best_bid_p, best_bid_v, best_ask_p, best_ask_v = 0.0, 0.0, 0.0, 0.0, 0.0
-    try:
-        ls_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=BTC&period=5m&limit=1&t={ts}"
-        ls_data = requests.get(ls_url, timeout=2).json().get("data", [])
-        if ls_data:
-            ratio_val = float(ls_data[0][1])
-            ls_ratio = (ratio_val / (ratio_val + 1)) * 100
-    except Exception:
-        pass
-
     try:
         book_urls = [
             f"https://www.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400&t={ts}",
@@ -229,8 +218,9 @@ def get_market_radar(btc_price, ts):
         bids = book.get("bids", [])
         asks = book.get("asks", [])
         
-        lower_bound = btc_price - 200
-        upper_bound = btc_price + 200
+        # AKTUALIZOVÁNO NA ±400 USD (0,50%)
+        lower_bound = btc_price - 400
+        upper_bound = btc_price + 400
         
         sum_bids = 0.0
         bid_blocks = {}
@@ -263,7 +253,7 @@ def get_market_radar(btc_price, ts):
     except Exception:
         pass
         
-    return ls_ratio, imb_vol, best_bid_p, best_bid_v, best_ask_p, best_ask_v
+    return imb_vol, best_bid_p, best_bid_v, best_ask_p, best_ask_v
 
 def fetch_okx_data():
     ts = int(time.time() * 1000)
@@ -298,7 +288,7 @@ def fetch_okx_data():
 
         return cvd_5m, oi_change_5m, cvd_series_12, oi_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
     except Exception:
-        return 0.0, 0.0, [], [], [], [], [], 76000.0, (50.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return 0.0, 0.0, [], [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0)
 
 def scan_setup_1(candles_300, cvd_series_12):
     try:
@@ -311,14 +301,16 @@ def scan_setup_1(candles_300, cvd_series_12):
             b_lows = [min(float(k[1]), float(k[4])) for k in sub_c]
             if min(b_lows) == 0: continue
             r_pct = ((max(b_highs) - min(b_lows)) / min(b_lows)) * 100
+            
+            # OPRAVA ZPĚT NA 0.25% - SETUP 1 ZŮSTÁVÁ NEDOTČEN
             if r_pct <= 0.25:
                 cum_cvd = sum(cvd_series_12[-length:])
                 if best_w is None or abs(cum_cvd) > abs(best_w["cvd"]): best_w = {"len": length, "pct": r_pct, "cvd": cum_cvd}
         if best_w is None: return "Trh trenduje. Mimo 0,25% zámek.", False
         
         if abs(best_w["cvd"]) >= 200: 
-            return f"🔥 SETUP 1 PLATNÝ! ({best_w['len']} svíček) CVD: {best_w['cvd']:+.1f} BTC.", True
-        return f"Range aktivní ({best_w['len']} svíček). CVD: {best_w['cvd']:+.1f} BTC.", False
+            return f"🔥 SETUP 1 PLATNÝ! ({best_w['len']} svíček | {best_w['pct']:.2f}%) CVD: {best_w['cvd']:+.1f} BTC.", True
+        return f"Range aktivní ({best_w['len']} svíček | {best_w['pct']:.2f}%). CVD: {best_w['cvd']:+.1f} BTC.", False
     except Exception: return "Načítám data...", False
 
 def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
@@ -434,7 +426,7 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
 
 total_pnl, win_rate = load_trading_data()
 okx_cvd, okx_oi_chg, cvd_12, oi_12, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
-ls_ratio, imb_vol, bid_p, bid_v, ask_p, ask_v = radar
+imb_vol, bid_p, bid_v, ask_p, ask_v = radar
 
 msg1, trg1 = scan_setup_1(c_300, cvd_12)
 msg2, trg2, l_str = scan_setup_2(c_300, c_1h, oi_res, b_price)
@@ -447,18 +439,18 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# OBŘÍ ZLATÝ BTC BANNER JAKO TAPETA S ŽIVOU ZLATOU CENOU NA SAMÉM SPODNÍM OKRAJI
+# 1. OBŘÍ ZLATÝ BTC BANNER (ČISTÝ OBRÁZEK)
 st.markdown(f"""
-<div class="gold-btc-banner">
-    <div class="gold-live-price">{b_price:.0f}</div>
-</div>
+<div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
 
-# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR
+# 2. HORNÍ ČÁST MATICE: NADPIS, ŽIVÁ CENA, CVD/OI, ASK/BID ZEĎ A PASIVNÍ TLAK
 st.markdown(f"""
 <div class="matrix-unified-top">
-<div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 18px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
-<div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 18px;">
+<div style="color: #ffffff; font-weight: 900; font-size: 20px; margin-bottom: 4px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
+<div class="matrix-live-price">{b_price:.0f}</div>
+
+<div style="display: flex; justify-content: space-around; align-items: center; margin-bottom: 22px;">
 <div style="text-align: center;">
 <div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">5M CVD</div>
 <div style="font-size: 38px; font-weight: 900; color: {cvd_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_cvd:+,.1f}</div>
@@ -468,19 +460,16 @@ st.markdown(f"""
 <div style="font-size: 38px; font-weight: 900; color: {oi_color}; text-shadow: 0px 2px 10px rgba(0,0,0,1);">{okx_oi_chg:+,.1f}</div>
 </div>
 </div>
-<div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 14px; margin-top: 10px;">
-<div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">LIQUIDITY & RETAIL RADAR (± 200 USD | 10$ BLOKY)</div>
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px;">
-<span style="font-weight: 800; color: #e2e8f0;">L/S Účty:</span>
-<span><strong style="color: #3fb950;">{ls_ratio:.0f}% LONG</strong> <span style="color: #6e7681;">|</span> <strong style="color: #f85149;">{100 - ls_ratio:.0f}% SHORT</strong></span>
-</div>
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14px;">
-<span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±200$):</span>
-<span style="font-weight: 900; color: {imb_color};">{imb_vol:+,.1f} BTC ({imb_text})</span>
-</div>
-<div style="display: flex; justify-content: space-between; font-size: 13px; background: rgba(4, 6, 9, 0.65); padding: 8px 12px; border-radius: 8px;">
+
+<div style="border-top: 1px solid rgba(255,255,255,0.15); padding-top: 16px; margin-top: 5px;">
+<div style="display: flex; justify-content: space-between; font-size: 14px; background: rgba(4, 6, 9, 0.65); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid rgba(45, 212, 191, 0.2);">
 <div style="text-align: left;"><span style="color: #f85149; font-weight: 900;">🔴 Ask Zeď:</span> <strong>{ask_v:.1f} BTC</strong> na {ask_p:.0f}</div>
 <div style="text-align: right;"><span style="color: #3fb950; font-weight: 900;">🟢 Bid Zeď:</span> <strong>{bid_v:.1f} BTC</strong> na {bid_p:.0f}</div>
+</div>
+
+<div style="text-align: center; font-size: 15px; background: rgba(0, 0, 0, 0.35); padding: 8px; border-radius: 8px;">
+<span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±400$ | 0.5%): </span>
+<span style="font-weight: 900; color: {imb_color};">{imb_vol:+,.1f} BTC ({imb_text})</span>
 </div>
 </div>
 </div>
