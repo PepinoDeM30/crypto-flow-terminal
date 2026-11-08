@@ -176,7 +176,7 @@ def get_okx_candles(bar, limit, ts):
     ]
     for u in urls:
         try:
-            data = requests.get(u, timeout=3).json().get("data", [])
+            data = requests.get(u, timeout=5).json().get("data", [])
             if data: return data
         except Exception:
             continue
@@ -195,7 +195,7 @@ def get_market_radar(btc_price, ts):
         ]
         book = {}
         for bu in book_urls:
-            res = requests.get(bu, timeout=2).json().get("data", [])
+            res = requests.get(bu, timeout=4).json().get("data", [])
             if res:
                 book = res[0]
                 break
@@ -205,7 +205,6 @@ def get_market_radar(btc_price, ts):
         
         sum_bids, sum_asks = 0.0, 0.0
         
-        # Roztřídění Asků (Prodejců) do 100$ boxů
         for a in asks:
             p, v = float(a[0]), float(a[1])
             if p <= btc_price + 400:
@@ -215,7 +214,6 @@ def get_market_radar(btc_price, ts):
                 elif p <= btc_price + 200: ask_v2 += vol
                 elif p <= btc_price + 300: ask_v3 += vol
                 
-        # Roztřídění Bidů (Kupců) do 100$ boxů
         for b in bids:
             p, v = float(b[0]), float(b[1])
             if p >= btc_price - 400:
@@ -240,14 +238,14 @@ def fetch_okx_data():
         candles_1h = get_okx_candles("1H", 72, ts)
 
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
-        vol_res = requests.get(vol_url, timeout=3).json().get("data", [])
+        vol_res = requests.get(vol_url, timeout=5).json().get("data", [])
         if len(vol_res) >= 12:
             for row in vol_res[:12][::-1]:
                 delta_raw = float(row[2]) - float(row[1])
                 cvd_series_12.append((delta_raw / btc_price) if (float(row[2]) + float(row[1])) > 50000 else delta_raw)
 
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=13&t={ts}"
-        oi_res = requests.get(oi_url, timeout=3).json().get("data", [])
+        oi_res = requests.get(oi_url, timeout=5).json().get("data", [])
         if len(oi_res) >= 13 and len(candles_300) >= 13:
             for i in range(12, 0, -1):
                 p_curr = float(candles_300[i-1][4])
@@ -282,7 +280,6 @@ def scan_setup_1(candles_300, cvd_series_12):
             if min(b_lows) == 0: continue
             r_pct = ((max(b_highs) - min(b_lows)) / min(b_lows)) * 100
             
-            # SETUP 1 ZŮSTÁVÁ NA 0.25%
             if r_pct <= 0.25:
                 cum_cvd = sum(cvd_series_12[-length:])
                 if best_w is None or abs(cum_cvd) > abs(best_w["cvd"]): best_w = {"len": length, "pct": r_pct, "cvd": cum_cvd}
@@ -423,79 +420,53 @@ c_oi1 = '#3fb950' if oi1 >= 0 else '#f85149'
 c_oi5 = '#3fb950' if oi5 >= 0 else '#f85149'
 c_oi9 = '#3fb950' if oi9 >= 0 else '#f85149'
 
-# 1. OBŘÍ ZLATÝ BTC BANNER
 st.markdown(f"""
 <div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
 
-# 2. HLAVNÍ MATICE (DOM + PASIVNÍ TLAK + CVD/OI)
 st.markdown(f"""
 <div class="matrix-unified">
 <div style="color: #ffffff; font-weight: 900; font-size: 20px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
-
-<!-- HORIZONTÁLNÍ DOM (HLOUBKA TRHU VE 3 PÁSMECH) -->
 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: center; margin-bottom: 15px;">
-    <!-- Řádek 1 (Vzdálenější boxy) -->
-    <div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
-    <div></div>
-    <div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v1:.0f}</div>
-    
-    <!-- Řádek 2 (Střed: Cena a střední boxy) -->
-    <div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v2:.0f}</div>
-    <div class="matrix-live-price" style="margin: 0; padding: 0;">{b_price:.0f}</div>
-    <div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v2:.0f}</div>
-    
-    <!-- Řádek 3 (Nejbližší boxy) -->
-    <div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
-    <div></div>
-    <div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v3:.0f}</div>
+<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
+<div></div>
+<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v3:.0f}</div>
+<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v2:.0f}</div>
+<div class="matrix-live-price" style="margin: 0; padding: 0;">{b_price:.0f}</div>
+<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v2:.0f}</div>
+<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
+<div></div>
+<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v1:.0f}</div>
 </div>
-
-<!-- PASIVNÍ TLAK CELKEM -->
 <div style="text-align: center; margin-bottom: 30px;">
-    <span style="font-size: 26px; font-weight: 900; color: {imb_color}; text-shadow: 0px 2px 8px rgba(0,0,0,0.8);">
-        {imb_vol:+,.1f}
-    </span>
+<span style="font-size: 26px; font-weight: 900; color: {imb_color}; text-shadow: 0px 2px 8px rgba(0,0,0,0.8);">{imb_vol:+,.1f}</span>
 </div>
-
-<!-- CVD A OI (VE 3 PATRECH: 5M, 25M, 45M) -->
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; align-items: center; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 15px;">
-    <div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">CVD</div>
-    <div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">OI</div>
-    
-    <!-- 5M (Nejvýraznější) -->
-    <div style="font-size: 34px; font-weight: 900; color: {c_cvd1};">{cvd1:+,.1f}</div>
-    <div style="font-size: 34px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f}</div>
-    
-    <!-- 25M -->
-    <div style="font-size: 26px; font-weight: 900; color: {c_cvd5}; opacity: 0.85;">{cvd5:+,.1f}</div>
-    <div style="font-size: 26px; font-weight: 900; color: {c_oi5}; opacity: 0.85;">{oi5:+,.1f}</div>
-    
-    <!-- 45M (Nejmenší) -->
-    <div style="font-size: 20px; font-weight: 900; color: {c_cvd9}; opacity: 0.7;">{cvd9:+,.1f}</div>
-    <div style="font-size: 20px; font-weight: 900; color: {c_oi9}; opacity: 0.7;">{oi9:+,.1f}</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">CVD</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">OI</div>
+<div style="font-size: 34px; font-weight: 900; color: {c_cvd1};">{cvd1:+,.1f}</div>
+<div style="font-size: 34px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f}</div>
+<div style="font-size: 26px; font-weight: 900; color: {c_cvd5}; opacity: 0.85;">{cvd5:+,.1f}</div>
+<div style="font-size: 26px; font-weight: 900; color: {c_oi5}; opacity: 0.85;">{oi5:+,.1f}</div>
+<div style="font-size: 20px; font-weight: 900; color: {c_cvd9}; opacity: 0.7;">{cvd9:+,.1f}</div>
+<div style="font-size: 20px; font-weight: 900; color: {c_oi9}; opacity: 0.7;">{oi9:+,.1f}</div>
 </div>
 </div>
 """, unsafe_allow_html=True)
 
-# 3. SETUPY VE SPOLEČNÉM BLOKU S PADÁKEM DOLARŮ
 st.markdown(f"""
 <div class="setups-container">
-    <div class="alert-box {"signal-triggered" if trg1 else ""}">
-        <div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1: ABSORPCE</div>
-        <div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg1}</div>
-    </div>
-    <div class="alert-box {"signal-triggered" if trg2 else ""}" style="margin-bottom: 0;">
-        <div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
-        <div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg2}</div>
-        <div style="color: #00f3ff; font-size: 13px; margin-top: 10px; font-weight: 800;">Zbývající aktivní levely: {l_str}</div>
-    </div>
+<div class="alert-box {"signal-triggered" if trg1 else ""}">
+<div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1: ABSORPCE</div>
+<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg1}</div>
+</div>
+<div class="alert-box {"signal-triggered" if trg2 else ""}" style="margin-bottom: 0;">
+<div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
+<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg2}</div>
+<div style="color: #00f3ff; font-size: 13px; margin-top: 10px; font-weight: 800;">Zbývající aktivní levely: {l_str}</div>
+</div>
 </div>
 """, unsafe_allow_html=True)
-
-# 4. PNL & WIN RATE
-pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
-pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
 st.markdown(f"""
 <div class="money-journal">
