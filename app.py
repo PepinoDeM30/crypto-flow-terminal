@@ -37,7 +37,7 @@ footer {visibility: hidden !important; display: none !important;}
     padding-bottom: 1.5rem !important; 
     padding-left: 0.4rem !important; 
     padding-right: 0.4rem !important;
-    margin-top: -55px !important;
+    margin-top: -60px !important;
 }
 iframe[height="0"] {display: none !important;}
 
@@ -59,48 +59,51 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* MAXIMÁLNÍ ZLATÝ TITUL BTC ORDER FLOW ÚPLNĚ NAHOŘE OD KRAJE KE KRAJI */
+/* MAXIMÁLNÍ ZLATÝ TITUL BTC ORDER FLOW */
 .header-container { 
     display: flex; 
     flex-direction: column; 
     align-items: center; 
-    justify-content: center; 
+    justify-content: flex-start; 
     margin-top: 0px; 
     margin-bottom: 14px; 
-    margin-left: -6px;
-    margin-right: -6px;
+    margin-left: -10px;
+    margin-right: -10px;
     position: relative;
 }
-.giant-btc-img { 
-    width: 100vw; 
-    max-width: 100%; 
-    height: 235px;
-    object-fit: cover;
-    object-position: center 55%;
-    border-radius: 0 0 22px 22px; 
-    box-shadow: 0 12px 35px rgba(247, 147, 26, 0.55); 
-    display: block;
-}
 
-/* FUTURISTICKÁ CENA BTC UVNITŘ HLAVIČKY (BEZ CENTŮ) */
+/* ZLATÁ FUTURISTICKÁ CENA POSUNUTÁ NAHORU NAD OBRÁZEK */
 .cyber-price-box {
-    margin-top: -38px;
-    background: rgba(4, 8, 16, 0.90);
-    border: 2px solid #00f3ff;
-    border-radius: 14px;
-    padding: 5px 34px;
-    box-shadow: 0 0 25px rgba(0, 243, 255, 0.65), inset 0 0 12px rgba(0, 243, 255, 0.3);
+    margin-top: 5px;
+    margin-bottom: -32px; /* Způsobí překryv s obrázkem pod ním */
+    background: rgba(20, 12, 0, 0.85);
+    border: 2px solid #f7931a;
+    border-radius: 12px;
+    padding: 2px 30px;
+    box-shadow: 0 0 25px rgba(247, 147, 26, 0.8), inset 0 0 15px rgba(247, 147, 26, 0.4);
     backdrop-filter: blur(8px);
     z-index: 10;
 }
 .cyber-price-text {
     font-family: 'Orbitron', sans-serif;
-    font-size: 38px;
+    font-size: 42px;
     font-weight: 900;
-    color: #00f3ff;
-    letter-spacing: 5px;
-    text-shadow: 0 0 14px #00f3ff, 0 0 28px rgba(0, 243, 255, 0.85);
+    color: #ffdf00; /* Zlatá barva */
+    letter-spacing: 4px;
+    text-shadow: 0 0 15px #f7931a, 0 0 30px #ff0000;
     line-height: 1.1;
+}
+
+/* OBRÁZEK ZVĚTŠENÝ NA MASIVNÍ VÝŠKU */
+.giant-btc-img { 
+    width: 100vw; 
+    max-width: 100%; 
+    height: 380px; /* Zásadní zvětšení na výšku */
+    object-fit: cover;
+    object-position: center center;
+    border-radius: 0 0 25px 25px; 
+    box-shadow: 0 12px 35px rgba(247, 147, 26, 0.55); 
+    display: block;
 }
 
 /* JEDINÝ VELKÝ OBDÉLNÍK OKX ORDER FLOW MATRIX S PADAJÍCÍMI DOLARY UVNITŘ */
@@ -456,13 +459,13 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. HLAVNÍ 3D TITUL BTC CO NEJVÍC NAHOŘE A MAXIMÁLNĚ VELKÝ + CENA BEZ CENTŮ
+# 1. HLAVNÍ 3D TITUL BTC CO NEJVÍC NAHOŘE A MAXIMÁLNĚ VELKÝ + ZLATÁ CENA NAHOŘE
 st.markdown(f"""
 <div class="header-container">
-<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
 <div class="cyber-price-box">
 <div class="cyber-price-text">{b_price:.0f}</div>
 </div>
+<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
 </div>
 """, unsafe_allow_html=True)
 
