@@ -83,11 +83,12 @@ iframe[height="0"] {display: none !important;}
 /* ŽIVÁ CENA UPROSTŘED DOMU */
 .matrix-live-price {
     font-family: 'Orbitron', sans-serif;
-    font-size: 44px;
+    font-size: 34px;
     font-weight: 900;
     color: #f0f6fc;
-    letter-spacing: 4px;
+    letter-spacing: 2px;
     text-align: center;
+    padding: 0 6px;
     text-shadow: 0 0 12px rgba(0, 243, 255, 0.4), 0 2px 5px rgba(0, 0, 0, 1);
 }
 
@@ -100,7 +101,7 @@ iframe[height="0"] {display: none !important;}
     background-size: cover;
     border: 1px solid #2dd4bf; 
     border-radius: 16px; 
-    padding: 20px 15px 25px 15px; 
+    padding: 20px 12px 25px 12px; 
     text-align: center; 
     margin-bottom: 18px; 
     box-shadow: 0 5px 30px rgba(0, 243, 255, 0.15); 
@@ -264,7 +265,7 @@ def fetch_okx_data():
         oi_5 = sum(oi_series_12[-5:]) if len(oi_series_12) >= 5 else 0.0
         oi_9 = sum(oi_series_12[-9:]) if len(oi_series_12) >= 9 else 0.0
 
-        return cvd_1, cvd_5, cvd_9, oi_1, oi_5, oi_9, cvd_series_12, c_300, c_1h, oi_res, btc_price, radar_data
+        return cvd_1, cvd_5, cvd_9, oi_1, oi_5, oi_9, cvd_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
     except Exception:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -420,6 +421,9 @@ c_oi1 = '#3fb950' if oi1 >= 0 else '#f85149'
 c_oi5 = '#3fb950' if oi5 >= 0 else '#f85149'
 c_oi9 = '#3fb950' if oi9 >= 0 else '#f85149'
 
+pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
+pnl_sign = '+$' if total_pnl >= 0 else '-$'
+
 st.markdown(f"""
 <div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
@@ -427,18 +431,18 @@ st.markdown(f"""
 st.markdown(f"""
 <div class="matrix-unified">
 <div style="color: #ffffff; font-weight: 900; font-size: 20px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: center; margin-bottom: 15px;">
-<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
+<div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px; align-items: center; margin-bottom: 18px;">
+<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
 <div></div>
-<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v3:.0f}</div>
-<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v2:.0f}</div>
-<div class="matrix-live-price" style="margin: 0; padding: 0;">{b_price:.0f}</div>
-<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v2:.0f}</div>
-<div style="font-size: 26px; font-weight: 900; color: #f85149; text-align: center;">{ask_v1:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v1:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v2:.0f}</div>
+<div class="matrix-live-price">{b_price:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v2:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #f85149; text-align: center;">{ask_v3:.0f}</div>
 <div></div>
-<div style="font-size: 26px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v1:.0f}</div>
+<div style="font-size: 25px; font-weight: 900; color: #3fb950; text-align: center;">{bid_v3:.0f}</div>
 </div>
-<div style="text-align: center; margin-bottom: 30px;">
+<div style="text-align: center; margin-bottom: 28px;">
 <span style="font-size: 26px; font-weight: 900; color: {imb_color}; text-shadow: 0px 2px 8px rgba(0,0,0,0.8);">{imb_vol:+,.1f}</span>
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; align-items: center; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 15px;">
