@@ -50,7 +50,7 @@ iframe[height="0"] {display: none !important;}
 .stApp { 
     background-color: #040609; 
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.45), rgba(4, 6, 9, 0.85)), 
+        linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.75)), 
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_ruby_red_neon_heart.jpg');
     background-attachment: fixed;
     background-position: center 45%;
@@ -59,53 +59,36 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* 1. OBROVSKÝ ZLATÝ OBRÁZEK BTC (ZVĚTŠENÝ 1.5X PŘES KRAJE) */
-.header-wrapper {
+/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU */
+.gold-btc-banner {
     width: 100vw;
     margin-left: calc(-50vw + 50%);
+    background-image: 
+        linear-gradient(rgba(4, 6, 9, 0.15), rgba(4, 6, 9, 0.55)), 
+        url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');
+    background-position: center center;
+    background-size: cover;
+    background-repeat: no-repeat;
+    height: 480px; /* Masivní výška přesně podle tvého přání */
     display: flex;
     flex-direction: column;
     align-items: center;
-    overflow: hidden; /* Skryje to, co přeteče mimo obrazovku */
-    margin-bottom: 10px;
-}
-.giant-btc-img {
-    width: 150vw; /* Roztáhne obrázek na 1.5 násobek šířky */
-    height: 480px; /* Masivní výška */
-    max-width: none;
-    object-fit: cover;
-    object-position: center 55%;
-    border-bottom: 1px solid rgba(247, 147, 26, 0.2);
-    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.9);
+    justify-content: flex-end; /* Přitlačí cenu dolů k textu ORDER FLOW */
+    padding-bottom: 35px;
+    margin-bottom: 25px;
+    box-shadow: 0 15px 45px rgba(0, 0, 0, 0.85);
+    border-bottom: 2px solid rgba(247, 147, 26, 0.3);
 }
 
-/* 2. TVŮJ HUD PANEL Z BINGU A ZÁŘÍCÍ CENA UVNITŘ */
-.hud-container {
-    position: relative;
-    width: 100vw;
-    margin-left: calc(-50vw + 50%);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    margin-bottom: 25px;
-}
-.hud-img {
-    width: 94vw; /* Zabereme skoro celou šířku displeje pro rámeček */
-    max-width: 450px;
-    display: block;
-    border-radius: 12px;
-}
-.hud-price {
-    position: absolute;
+/* ŽIVÁ CENA VE ZLATÉM STYLU PŘESNĚ JAKO NÁPIS ORDER FLOW */
+.gold-live-price {
     font-family: 'Orbitron', sans-serif;
-    font-size: 55px; /* Obří číslo ceny */
+    font-size: 52px;
     font-weight: 900;
-    color: #ffffff; /* Bílé jádro neonu */
-    letter-spacing: 7px;
-    text-shadow: 0 0 12px #00f3ff, 0 0 25px #00f3ff, 0 0 45px #00f3ff;
-    z-index: 10;
-    /* Drobná úprava, aby byla cena přesně v centru rámečku: */
-    margin-top: -5px; 
+    color: #ffdf00; /* Zlatá barva shodná s medailonem */
+    letter-spacing: 6px;
+    text-shadow: 0 0 15px #f7931a, 0 0 30px #ff8c00, 0 2px 5px rgba(0,0,0,0.9);
+    line-height: 1;
 }
 
 /* JEDINÝ VELKÝ OBDÉLNÍK OKX ORDER FLOW MATRIX S PADAJÍCÍMI DOLARY UVNITŘ */
@@ -461,22 +444,14 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. OBŘÍ ZLATÝ OBRÁZEK BTC
+# OBŘÍ ZLATÝ BTC BANNER JAKO TAPETA S ŽIVOU CENOU UVNITŘ VE ZLATÉM STYLU
 st.markdown(f"""
-<div class="header-wrapper">
-    <img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
+<div class="gold-btc-banner">
+    <div class="gold-live-price">{b_price:.0f}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# 2. TVŮJ HUD PANEL S CENOU UVNITŘ
-st.markdown(f"""
-<div class="hud-container">
-    <img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_hyper-realistic_futuristic_cyberpunk_HUD_display_interface.jpg" class="hud-img">
-    <div class="hud-price">{b_price:.0f}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# 3. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR
+# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR
 st.markdown(f"""
 <div class="matrix-unified-top">
 <div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 18px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
@@ -508,7 +483,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 4. STŘEDNÍ PŘEPÍNAČ HISTORIE
+# 3. STŘEDNÍ PŘEPÍNAČ HISTORIE
 tf = st.radio("Historie matice", ["15m", "30m", "45m", "60m"], horizontal=True, label_visibility="collapsed")
 if tf == "15m": n = 3
 elif tf == "30m": n = 6
@@ -522,7 +497,7 @@ sum_oi = sum(sub_oi)
 cvd_str = " | ".join([f"{x:+.1f}" for x in sub_cvd])
 oi_str = " | ".join([f"{x:+.1f}" for x in sub_oi])
 
-# 5. SPODNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: HISTORIE ZA 15m/30m/45m/60m
+# 4. SPODNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: HISTORIE ZA 15m/30m/45m/60m
 st.markdown(f"""
 <div class="matrix-unified-bottom">
 <div style="color: #00f3ff; font-size: 12px; font-weight: 900; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">DATA ZA POSLEDNÍCH {tf.upper()}</div>
@@ -533,7 +508,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 6. PŘEPÍNAČ SETUPŮ 1 A 2
+# 5. PŘEPÍNAČ SETUPŮ 1 A 2
 s_mode = st.radio("Mód:", ["⚡ Setup 1", "🎯 Setup 2"], horizontal=True, label_visibility="collapsed")
 if "Setup 1" in s_mode:
     st.markdown(f"""
@@ -551,7 +526,7 @@ else:
 </div>
 """, unsafe_allow_html=True)
 
-# 7. PNL & WIN RATE
+# 6. PNL & WIN RATE
 pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
 pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
