@@ -108,7 +108,6 @@ def load_trading_data():
         return -41.03, 38.10
 
 def get_okx_candles(bar, limit, ts):
-    # Přímé napojení na tvůj TradingView kontrakt BTCUSD UM X-Perp (Apr 2031) -> BTC-USD_UM_XPERP-310404
     urls = [
         f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
         f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
@@ -171,8 +170,11 @@ def scan_setup_1(candles_300, cvd_series_12):
                 cum_cvd = sum(cvd_series_12[-length:])
                 if best_w is None or abs(cum_cvd) > abs(best_w["cvd"]): best_w = {"len": length, "pct": r_pct, "cvd": cum_cvd}
         if best_w is None: return "Trh trenduje. Mimo 0,25% zámek.", False
-        if abs(best_w["cvd"]) >= 200: return f"🔥 SETUP 1 PLATNÝ! CVD: {best_w['cvd']:+.1f} BTC.", True
-        return f"Range aktivní. CVD: {best_w['cvd']:+.1f} BTC.", False
+        
+        # Přidán výpis počtu svíček do zprávy
+        if abs(best_w["cvd"]) >= 200: 
+            return f"🔥 SETUP 1 PLATNÝ! ({best_w['len']} svíček) CVD: {best_w['cvd']:+.1f} BTC.", True
+        return f"Range aktivní ({best_w['len']} svíček). CVD: {best_w['cvd']:+.1f} BTC.", False
     except Exception: return "Načítám data...", False
 
 def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
@@ -180,13 +182,11 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         if len(candles_300) < 5 or len(oi_data) < 4:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
-        # Přesný pražský čas UTC+1 (stejný jako na tvém TradingView)
         tz_offset = timezone(timedelta(hours=1))
         now_prague = datetime.now(tz_offset)
         current_date = now_prague.date()
         yesterday_date = current_date - timedelta(days=1)
 
-        # 1. Výpočet PDH a PDL přesně za včerejší den (00:00 až 23:59 UTC+1)
         pdh, pdl = 0.0, float('inf')
         for c in candles_1h:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
@@ -196,7 +196,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         if pdh == 0.0:
             pdh, pdl = 0.0, 0.0
 
-        # 2. Výpočet Asie (01:00 - 07:00) a Londýna (09:00 - 14:00) v UTC+1
         asia_h, asia_l = 0.0, float('inf')
         lon_h, lon_l = 0.0, float('inf')
 
@@ -219,7 +218,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
 
         levels_str = f"PDH: {pdh:.1f} | PDL: {pdl:.1f} ⚡ ASIA H: {asia_h:.1f} | ASIA L: {asia_l:.1f} ⚡ LON H: {lon_h:.1f} | LON L: {lon_l:.1f}"
 
-        # 3. Analýza protnutí hladiny na Sweep svíčce (c2) a změny OI za c2 + c1
         c3 = candles_300[3]
         c2 = candles_300[2]
         c3_close = float(c3[4])
