@@ -59,35 +59,38 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU */
+/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU S CENOU NA SPODNÍM OKRAJI */
 .gold-btc-banner {
     width: 100vw;
     margin-left: calc(-50vw + 50%);
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.15), rgba(4, 6, 9, 0.55)), 
+        linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.65)), 
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');
     background-position: center center;
     background-size: cover;
     background-repeat: no-repeat;
-    height: 480px; /* Masivní výška přesně podle tvého přání */
+    height: 480px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-end; /* Přitlačí cenu dolů k textu ORDER FLOW */
-    padding-bottom: 35px;
+    justify-content: flex-end; /* Přitlačí obsah dolů na samý okraj */
+    padding-bottom: 15px; /* Přesně na spodní okraj obdélníku */
     margin-bottom: 25px;
     box-shadow: 0 15px 45px rgba(0, 0, 0, 0.85);
-    border-bottom: 2px solid rgba(247, 147, 26, 0.3);
+    border-bottom: 2px solid rgba(247, 147, 26, 0.4);
 }
 
-/* ŽIVÁ CENA VE ZLATÉM STYLU PŘESNĚ JAKO NÁPIS ORDER FLOW */
+/* ŽIVÁ CENA VE ZLATÉM 3D STYLU SHODNÉM S NÁPISEM ORDER FLOW */
 .gold-live-price {
     font-family: 'Orbitron', sans-serif;
-    font-size: 52px;
+    font-size: 50px;
     font-weight: 900;
-    color: #ffdf00; /* Zlatá barva shodná s medailonem */
+    color: #ffdf00;
     letter-spacing: 6px;
-    text-shadow: 0 0 15px #f7931a, 0 0 30px #ff8c00, 0 2px 5px rgba(0,0,0,0.9);
+    background: linear-gradient(180deg, #fff3a8 0%, #f7b733 50%, #fc4a1a 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 3px 10px rgba(0, 0, 0, 0.95), 0 0 20px rgba(247, 147, 26, 0.6);
     line-height: 1;
 }
 
@@ -444,7 +447,7 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# OBŘÍ ZLATÝ BTC BANNER JAKO TAPETA S ŽIVOU CENOU UVNITŘ VE ZLATÉM STYLU
+# OBŘÍ ZLATÝ BTC BANNER JAKO TAPETA S ŽIVOU ZLATOU CENOU NA SAMÉM SPODNÍM OKRAJI
 st.markdown(f"""
 <div class="gold-btc-banner">
     <div class="gold-live-price">{b_price:.0f}</div>
