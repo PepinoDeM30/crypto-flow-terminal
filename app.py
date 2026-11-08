@@ -123,6 +123,26 @@ iframe[height="0"] {display: none !important;}
     box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);
 }
 
+/* SETUP KARTY - Pevná, shodná výška a poloprůhledné pozadí (OPRAVENO PRO LEPŠÍ VIDITELNOST BANKOVEK) */
+.alert-box { 
+    background: rgba(13, 19, 31, 0.35); /* Snížená neprůhlednost z 0.65 na 0.35 */
+    border: 1px solid rgba(31, 41, 55, 0.6); 
+    padding: 16px; 
+    border-radius: 15px; 
+    margin-bottom: 12px; 
+    backdrop-filter: blur(1px); /* Téměř vypnuté rozmazání, aby bankovky prosvítaly ostře */
+    height: 125px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.signal-triggered { 
+    background-color: rgba(35, 12, 16, 0.55) !important; /* Větší průhlednost i pro spuštěný alert */
+    border: 2px solid #f85149 !important; 
+    animation: pulse-alert 1s infinite alternate; 
+}
+@keyframes pulse-alert { 0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); } 100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); } }
+
 /* VÝSLEDKY PNL */
 .money-journal { 
     background-image: 
@@ -138,11 +158,6 @@ iframe[height="0"] {display: none !important;}
     border: 1px solid #1f7a43; 
 }
 .money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; align-items: center; }
-
-/* SETUP KARTY */
-.alert-box { background: rgba(13, 19, 31, 0.85); border: 1px solid #1f2937; padding: 18px; border-radius: 15px; margin-bottom: 12px; backdrop-filter: blur(10px); }
-.signal-triggered { background-color: rgba(35, 12, 16, 0.95) !important; border: 2px solid #f85149 !important; animation: pulse-alert 1s infinite alternate; }
-@keyframes pulse-alert { 0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); } 100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); } }
 
 div.stButton > button { width: 100%; background: rgba(17, 24, 39, 0.85); color: #f0f6fc !important; border: 1px solid #374151 !important; border-radius: 10px; padding: 14px; font-size: 15px !important; font-weight: 900 !important; margin-bottom: 10px; }
 div.stButton > button:hover { border-color: #00f3ff !important; color: #00f3ff !important; }
@@ -217,12 +232,12 @@ def get_market_radar(btc_price, ts):
                 
         for b in bids:
             p, v = float(b[0]), float(b[1])
-            if p >= btc_price - 400:
+            if p >= btc_price - 400.1:
                 vol = (v * 100) / p
                 sum_bids += vol
-                if p >= btc_price - 100: bid_v1 += vol
-                elif p >= btc_price - 200: bid_v2 += vol
-                elif p >= btc_price - 300: bid_v3 += vol
+                if p >= btc_price - 100.1: bid_v1 += vol
+                elif p >= btc_price - 200.1: bid_v2 += vol
+                elif p >= btc_price - 300.1: bid_v3 += vol
                 
         imb_vol = sum_bids - sum_asks
     except Exception:
@@ -461,13 +476,13 @@ st.markdown(f"""
 st.markdown(f"""
 <div class="setups-container">
 <div class="alert-box {"signal-triggered" if trg1 else ""}">
-<div style="color: #f7931a; font-weight: 900; font-size: 18px;">⚡ SETUP 1: ABSORPCE</div>
-<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg1}</div>
+<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>
 </div>
 <div class="alert-box {"signal-triggered" if trg2 else ""}" style="margin-bottom: 0;">
-<div style="color: #a371f7; font-weight: 900; font-size: 18px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
-<div style="color: #e2e8f0; font-size: 15px; margin-top: 5px; font-weight: 700;">{msg2}</div>
-<div style="color: #00f3ff; font-size: 13px; margin-top: 10px; font-weight: 800;">Zbývající aktivní levely: {l_str}</div>
+<div style="color: #a371f7; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP (PRVNÍ DOTEK)</div>
+<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>
+<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>
 </div>
 </div>
 """, unsafe_allow_html=True)
