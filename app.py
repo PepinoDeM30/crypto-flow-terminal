@@ -59,51 +59,50 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* MAXIMÁLNÍ ZLATÝ TITUL BTC ORDER FLOW */
+/* ROZBITÍ STREAMLIT OKRAJŮ - OBRÁZEK PŘES CELOU ŠÍŘKU A OBŘÍ VÝŠKU */
 .header-container { 
-    display: flex; 
-    flex-direction: column; 
-    align-items: center; 
-    justify-content: flex-start; 
-    margin-top: 0px; 
-    margin-bottom: 14px; 
-    margin-left: -10px;
-    margin-right: -10px;
+    width: 100vw;
+    margin-left: calc(-50vw + 50%);
+    margin-top: -60px; 
+    margin-bottom: 25px;
     position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end; /* Zarovná holografickou cenu dolů */
 }
 
-/* ZLATÁ FUTURISTICKÁ CENA POSUNUTÁ NAHORU NAD OBRÁZEK */
+.giant-btc-img { 
+    width: 100vw; 
+    height: 450px; /* MASIVNÍ VÝŠKA OBRÁZKU */
+    object-fit: cover;
+    object-position: center center;
+    border-bottom: 2px solid rgba(0, 243, 255, 0.3); 
+    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.9); 
+    display: block;
+}
+
+/* FUTURISTICKÝ HUD DISPLEJ PRO CENU (VZNAŠÍ SE NA OBRÁZKU) */
 .cyber-price-box {
-    margin-top: 5px;
-    margin-bottom: -32px; /* Způsobí překryv s obrázkem pod ním */
-    background: rgba(20, 12, 0, 0.85);
-    border: 2px solid #f7931a;
-    border-radius: 12px;
-    padding: 2px 30px;
-    box-shadow: 0 0 25px rgba(247, 147, 26, 0.8), inset 0 0 15px rgba(247, 147, 26, 0.4);
-    backdrop-filter: blur(8px);
+    position: absolute;
+    bottom: 25px; /* Kousek nad spodním okrajem obrázku */
+    background: rgba(0, 12, 25, 0.55);
+    border: 1px solid rgba(0, 243, 255, 0.2);
+    border-left: 5px solid #00f3ff;
+    border-right: 5px solid #00f3ff;
+    border-radius: 6px;
+    padding: 6px 45px;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 0 30px rgba(0, 243, 255, 0.4), inset 0 0 20px rgba(0, 243, 255, 0.2);
     z-index: 10;
 }
 .cyber-price-text {
     font-family: 'Orbitron', sans-serif;
-    font-size: 42px;
+    font-size: 50px;
     font-weight: 900;
-    color: #ffdf00; /* Zlatá barva */
-    letter-spacing: 4px;
-    text-shadow: 0 0 15px #f7931a, 0 0 30px #ff0000;
+    color: #ffffff; /* Bílé zářící jádro */
+    letter-spacing: 7px;
+    text-shadow: 0 0 12px #00f3ff, 0 0 25px #00f3ff, 0 0 45px #00f3ff;
     line-height: 1.1;
-}
-
-/* OBRÁZEK ZVĚTŠENÝ NA MASIVNÍ VÝŠKU */
-.giant-btc-img { 
-    width: 100vw; 
-    max-width: 100%; 
-    height: 380px; /* Zásadní zvětšení na výšku */
-    object-fit: cover;
-    object-position: center center;
-    border-radius: 0 0 25px 25px; 
-    box-shadow: 0 12px 35px rgba(247, 147, 26, 0.55); 
-    display: block;
 }
 
 /* JEDINÝ VELKÝ OBDÉLNÍK OKX ORDER FLOW MATRIX S PADAJÍCÍMI DOLARY UVNITŘ */
@@ -459,17 +458,17 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. HLAVNÍ 3D TITUL BTC CO NEJVÍC NAHOŘE A MAXIMÁLNĚ VELKÝ + ZLATÁ CENA NAHOŘE
+# 1. OBŘÍ OBRÁZEK PŘES CELOU OBRAZOVKU S HOLOGRAFICKOU CENOU UVNITŘ
 st.markdown(f"""
 <div class="header-container">
+<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
 <div class="cyber-price-box">
 <div class="cyber-price-text">{b_price:.0f}</div>
 </div>
-<img src="https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg" class="giant-btc-img">
 </div>
 """, unsafe_allow_html=True)
 
-# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR (BEZ ODSAZENÍ)
+# 2. HORNÍ ČÁST JEDNOTNÉHO OBDÉLNÍKU: OKX ORDER FLOW MATRIX + LIQUIDITY RADAR
 st.markdown(f"""
 <div class="matrix-unified-top">
 <div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 18px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
@@ -501,7 +500,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 3. STŘEDNÍ PŘEPÍNAČ HISTORIE (INTEGROVANÝ PŘÍMO DO MATRIX OBDÉLNÍKU)
+# 3. STŘEDNÍ PŘEPÍNAČ HISTORIE
 tf = st.radio("Historie matice", ["15m", "30m", "45m", "60m"], horizontal=True, label_visibility="collapsed")
 if tf == "15m": n = 3
 elif tf == "30m": n = 6
