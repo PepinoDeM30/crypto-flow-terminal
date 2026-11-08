@@ -1,29 +1,10 @@
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 import time
 from datetime import datetime, timezone, timedelta
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
-
-# JavaScript injekce přímo do hlavního <head> prohlížeče pro vynucení černé systémové lišty
-components.html("""
-<script>
-    try {
-        const doc = window.parent.document;
-        let meta = doc.querySelector('meta[name="theme-color"]');
-        if (!meta) {
-            meta = doc.createElement('meta');
-            meta.name = "theme-color";
-            doc.head.appendChild(meta);
-        }
-        meta.content = "#040609";
-        doc.body.style.backgroundColor = "#040609";
-        doc.documentElement.style.backgroundColor = "#040609";
-    } catch (e) {}
-</script>
-""", height=0)
 
 # Skrytí všech výchozích menu Streamlitu a nastavení barev
 st.markdown("""
@@ -33,7 +14,6 @@ header[data-testid="stHeader"] {visibility: hidden !important; display: none !im
 footer {visibility: hidden !important; display: none !important;}
 .viewerBadge_container__1QSob {display: none !important;}
 [data-testid="stAppViewBlockContainer"] {padding-top: 0rem !important; padding-bottom: 2rem !important;}
-iframe[height="0"] {display: none !important;}
 
 /* PADAJÍCÍ DOLARY NA POZADÍ CELÉ APLIKACE S JEMNÝM FILTREM */
 .stApp { 
@@ -48,7 +28,7 @@ iframe[height="0"] {display: none !important;}
 }
 
 /* TVŮJ LUXUSNÍ ZLATÝ BTC OBRÁZEK S NADPISEM */
-.header-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 5px; margin-bottom: 25px; }
+.header-container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 10px; margin-bottom: 25px; }
 .giant-btc-img { width: 100%; max-width: 380px; border-radius: 20px; box-shadow: 0 15px 40px rgba(247, 147, 26, 0.4); }
 
 /* MATICE A PRÉMIOVÉ 3D SRDCE JAKO POZADÍ */
@@ -127,22 +107,31 @@ def load_trading_data():
     except Exception:
         return -41.03, 38.10
 
+def get_okx_candles(bar, limit, ts):
+    # Přímé napojení na tvůj TradingView kontrakt BTCUSD UM X-Perp (Apr 2031) -> BTC-USD_UM_XPERP-310404
+    urls = [
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}"
+    ]
+    for u in urls:
+        try:
+            data = requests.get(u, timeout=3).json().get("data", [])
+            if data:
+                return data
+        except Exception:
+            continue
+    return []
+
 def fetch_okx_data():
     ts = int(time.time() * 1000)
     cvd_5m, oi_change_5m = 0.0, 0.0
     cvd_series_12, oi_series_12 = [], []
     try:
-        # Stahujeme přímo BTC-USD-SWAP, aby hladiny na dolar seděly s grafem BTCUSD UM X-Perp v TradingView
-        c_url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar=5m&limit=300&t={ts}"
-        candles_300 = requests.get(c_url, timeout=3).json().get("data", [])
-        if not candles_300:
-            c_url_fallback = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=300&t={ts}"
-            candles_300 = requests.get(c_url_fallback, timeout=3).json().get("data", [])
+        candles_300 = get_okx_candles("5m", 300, ts)
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
 
-        # Stahujeme 72 hodinových (1H) svíček pro výpočet včerejšího PDH/PDL přesně podle pražského času (00:00 - 23:59 UTC+1)
-        h_url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar=1H&limit=72&t={ts}"
-        candles_1h = requests.get(h_url, timeout=3).json().get("data", [])
+        candles_1h = get_okx_candles("1H", 72, ts)
 
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
         vol_res = requests.get(vol_url, timeout=3).json().get("data", [])
@@ -211,7 +200,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         asia_h, asia_l = 0.0, float('inf')
         lon_h, lon_l = 0.0, float('inf')
 
-        # Bereme svíčky před testovaným sweep oknem (candles_300[3:]), aby svíčka nepřepisovala sama sebe
         for c in candles_300[3:]:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
             if dt.date() != current_date:
@@ -232,8 +220,8 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         levels_str = f"PDH: {pdh:.1f} | PDL: {pdl:.1f} ⚡ ASIA H: {asia_h:.1f} | ASIA L: {asia_l:.1f} ⚡ LON H: {lon_h:.1f} | LON L: {lon_l:.1f}"
 
         # 3. Analýza protnutí hladiny na Sweep svíčce (c2) a změny OI za c2 + c1
-        c3 = candles_300[3] # Svíčka před průrazem
-        c2 = candles_300[2] # Sweep svíčka
+        c3 = candles_300[3]
+        c2 = candles_300[2]
         c3_close = float(c3[4])
         c2_high, c2_low = float(c2[2]), float(c2[3])
 
@@ -241,7 +229,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         oi_start_c2 = float(oi_data[3][1]) / float(candles_300[3][4])
         oi_change = oi_end_c1 - oi_start_c2
 
-        # Test protnutí High (Bearish SFP) - předchozí svíčka byla pod hladinou a c2 ji propíchla
         pierced_h = None
         if pdh > 0 and c3_close < pdh and c2_high >= pdh: pierced_h = "Previous Daily High"
         elif lon_h > 0 and c3_close < lon_h and c2_high >= lon_h: pierced_h = "London High"
@@ -251,7 +238,6 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
             if oi_change <= -50: return f"🔥 BEARISH SFP! {pierced_h} propíchnuto. OI výplach {oi_change:.1f} BTC.", True, levels_str
             else: return f"👀 {pierced_h} dotknuto. Čekám na výplach (OI: {oi_change:.1f} BTC).", False, levels_str
 
-        # Test protnutí Low (Bullish SFP) - předchozí svíčka byla nad hladinou a c2 ji propíchla
         pierced_l = None
         if pdl > 0 and c3_close > pdl and c2_low <= pdl: pierced_l = "Previous Daily Low"
         elif lon_l > 0 and c3_close > lon_l and c2_low <= lon_l: pierced_l = "London Low"
