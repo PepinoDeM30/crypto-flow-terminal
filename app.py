@@ -59,7 +59,7 @@ iframe[height="0"] {display: none !important;}
     color: #f0f6fc; 
 }
 
-/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU (ČISTÝ) */
+/* JEDNOTNÝ OBŘÍ BLOK PRO ZLATÝ BTC OBRÁZEK JAKO TAPETU (OPRAVENÝ ODKAZ) */
 .gold-btc-banner {
     width: 100vw;
     margin-left: calc(-50vw + 50%);
@@ -177,14 +177,24 @@ def load_trading_data():
         sheet_id = "1nyV3Xa0BNX-DVLkkbd-wshjuHzPcjOVw3jr6O3BjxCw"
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df = pd.read_csv(csv_url, header=None)
+        
+        # Řádek 18 (Celkem / Souhrn) má v Pandas index 17
         row_summary = df.iloc[17]
-        pnl_raw = str(row_summary.iloc[2]).replace(" ", "").replace(",", ".")
-        total_pnl = float(pnl_raw) if pnl_raw not in ["nan", "0", "0.0"] else -41.03
-        win_raw = str(row_summary.iloc[6]).replace("%", "").replace(" ", "").replace(",", ".")
-        win_rate = float(win_raw) if win_raw not in ["nan", "0", "0.0"] else 38.10
+        
+        # Čištění PNL od znaků měn (Sloupec C = index 2)
+        pnl_raw = str(row_summary.iloc[2])
+        pnl_clean = pnl_raw.replace("$", "").replace("€", "").replace(" ", "").replace(",", ".")
+        total_pnl = float(pnl_clean) if pnl_clean.lower() not in ["nan", "0", "0.0", ""] else 0.0
+        
+        # Čištění Win Rate od procent (Sloupec G = index 6)
+        win_raw = str(row_summary.iloc[6])
+        win_clean = win_raw.replace("%", "").replace(" ", "").replace(",", ".")
+        win_rate = float(win_clean) if win_clean.lower() not in ["nan", "0", "0.0", ""] else 0.0
+        
         return total_pnl, win_rate
     except Exception:
-        return -41.03, 38.10
+        # V případě výpadku tabulky vrátí čisté nuly
+        return 0.0, 0.0
 
 def get_okx_candles(bar, limit, ts):
     urls = [
@@ -302,7 +312,7 @@ def scan_setup_1(candles_300, cvd_series_12):
             if min(b_lows) == 0: continue
             r_pct = ((max(b_highs) - min(b_lows)) / min(b_lows)) * 100
             
-            # PŘESNĚ JAK MÁ BÝT: 0.25% ZÁMEK PRO SETUP 1
+            # SETUP 1 ZŮSTÁVÁ NA 0.25%
             if r_pct <= 0.25:
                 cum_cvd = sum(cvd_series_12[-length:])
                 if best_w is None or abs(cum_cvd) > abs(best_w["cvd"]): best_w = {"len": length, "pct": r_pct, "cvd": cum_cvd}
@@ -439,7 +449,7 @@ oi_color = '#3fb950' if okx_oi_chg >= 0 else '#f85149'
 imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 imb_text = 'PŘEVAHA KUPCŮ' if imb_vol >= 0 else 'PŘEVAHA PRODEJCŮ'
 
-# 1. OBŘÍ ZLATÝ BTC BANNER (Odkaz OPRAVEN)
+# 1. OBŘÍ ZLATÝ BTC BANNER
 st.markdown(f"""
 <div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
@@ -468,7 +478,7 @@ st.markdown(f"""
 </div>
 
 <div style="text-align: center; font-size: 15px; background: rgba(0, 0, 0, 0.35); padding: 8px; border-radius: 8px;">
-<span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±400$ | 0.5%): </span>
+<span style="font-weight: 800; color: #e2e8f0;">Pasivní Tlak (±400$): </span>
 <span style="font-weight: 900; color: {imb_color};">{imb_vol:+,.1f} BTC ({imb_text})</span>
 </div>
 </div>
