@@ -4,6 +4,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import time
 from datetime import datetime, timezone, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
@@ -187,7 +189,6 @@ def load_trading_data():
 
 @st.cache_data(ttl=3600)
 def get_contract_spec(inst_id):
-    """Zjistí přesnou velikost kontraktu (ctVal a měnu) přímo z OKX, aby nedocházelo k zkreslení."""
     for inst_type in ["SWAP", "FUTURES"]:
         for host in ["https://eea.okx.com", "https://www.okx.com"]:
             try:
@@ -293,24 +294,23 @@ def fetch_okx_data():
 
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # 1. FUTURES CVD (OPRAVENO: Převod obřích USD částek na čisté BTC)
+        # FUTURES CVD
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
         vol_res = requests.get(vol_url, timeout=5).json().get("data", [])
         if len(vol_res) >= 12:
             for row in vol_res[:12][::-1]:
                 delta_raw = float(row[2]) - float(row[1])
-                # Pokud je delta enormní (>50,000), je to v USD, proto dělíme cenou BTC
                 cvd_btc = (delta_raw / btc_price) if abs(delta_raw) > 50000 else delta_raw
                 cvd_series_12.append(cvd_btc)
 
-        # 2. SPOT CVD (Spot rovnou vrací BTC)
+        # SPOT CVD
         spot_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&unit=1&t={ts}"
         spot_res = requests.get(spot_url, timeout=5).json().get("data", [])
         if len(spot_res) >= 12:
             for row in spot_res[:12][::-1]:
                 spot_cvd_series_12.append(float(row[2]) - float(row[1]))
 
-        # 3. OPEN INTEREST
+        # OPEN INTEREST
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=13&t={ts}"
         oi_res = requests.get(oi_url, timeout=5).json().get("data", [])
         if len(oi_res) >= 13 and len(candles_300) >= 14:
@@ -337,9 +337,9 @@ def fetch_okx_data():
         oi_5 = sum(oi_series_12[-5:]) if len(oi_series_12) >= 5 else 0.0
         oi_9 = sum(oi_series_12[-9:]) if len(oi_series_12) >= 9 else 0.0
 
-        return cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9, cvd_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
+        return cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9, cvd_series_12, spot_cvd_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
     except Exception:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 def scan_setup_1(candles_300, cvd_series_12):
     try:
@@ -475,7 +475,7 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         return "Načítám levely...", False, ""
 
 total_pnl, win_rate = load_trading_data()
-cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9, cvd_12, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
+cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9, cvd_12, scvd_12, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
 imb_vol, ask_v1, ask_v2, ask_v3, bid_v1, bid_v2, bid_v3 = radar
 
 msg1, trg1 = scan_setup_1(c_300, cvd_12)
@@ -505,6 +505,7 @@ st.markdown(f"""
 <div class="gold-btc-banner"></div>
 """, unsafe_allow_html=True)
 
+# HLAVNÍ MATICE DAT
 st.markdown(f"""
 <div class="matrix-unified">
 <div style="color: #ffffff; font-weight: 900; font-size: 20px; margin-bottom: 25px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW MATRIX</div>
@@ -539,6 +540,61 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# NOVÁ SEKCE: VIZUÁLNÍ DETEKCE ABSORPCE (GRAFY)
+st.markdown("""
+<div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
+    <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE (1H)</div>
+    <div style="color: #2dd4bf; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-shadow: 0 1px 3px black;">PRICE 🔹 FUTURES CVD 🔸 SPOT CVD</div>
+</div>
+""", unsafe_allow_html=True)
+
+if len(c_300) >= 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
+    c_12 = c_300[:12][::-1] 
+    x_axis = list(range(12))
+    
+    cum_cvd_chart, cum_scvd_chart = [], []
+    curr_c, curr_s = 0, 0
+    for i in range(12):
+        curr_c += cvd_12[i]
+        curr_s += scvd_12[i]
+        cum_cvd_chart.append(curr_c)
+        cum_scvd_chart.append(curr_s)
+        
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.5, 0.25, 0.25])
+    
+    # 1. Price (Svíčky)
+    fig.add_trace(go.Candlestick(x=x_axis,
+                                 open=[float(c[1]) for c in c_12],
+                                 high=[float(c[2]) for c in c_12],
+                                 low=[float(c[3]) for c in c_12],
+                                 close=[float(c[4]) for c in c_12],
+                                 increasing_line_color='#3fb950', decreasing_line_color='#f85149',
+                                 increasing_fillcolor='#3fb950', decreasing_fillcolor='#f85149',
+                                 showlegend=False), row=1, col=1)
+                                 
+    # 2. Futures CVD (Modrá křivka)
+    fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode='lines', 
+                             line=dict(color='#00f3ff', width=3, shape='spline'), showlegend=False), row=2, col=1)
+                             
+    # 3. Spot CVD (Žlutá křivka)
+    fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
+                             line=dict(color='#f1e05a', width=3, shape='spline'), showlegend=False), row=3, col=1)
+
+    fig.update_layout(
+        height=280,
+        margin=dict(l=0, r=0, t=25, b=0, pad=0),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False)),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False),
+        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False)
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+# SETUP KARTY
 st.markdown(f"""
 <div class="setups-container">
 <div class="alert-box {"signal-triggered" if trg1 else ""}">
@@ -553,6 +609,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# MONEY JOURNAL
 st.markdown(f"""
 <div class="money-journal">
 <div class="money-content">
