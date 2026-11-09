@@ -227,25 +227,18 @@ def get_market_radar(btc_price, ts):
             ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USDC-SWAP&sz=5000", "BTC-USDC-SWAP"),
             ("https://eea.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400", "BTC-USD_UM_XPERP-310404")
         ]
-        book = {}
-        active_inst = "BTC-USD_UM_XPERP-310404"
+        book, active_inst = {}, "BTC-USD_UM_XPERP-310404"
         for bu, inst_name in endpoints:
             try:
                 res = requests.get(bu, timeout=4).json().get("data", [])
                 if res and (res[0].get("asks") or res[0].get("bids")):
-                    book = res[0]
-                    active_inst = inst_name
+                    book, active_inst = res[0], inst_name
                     break
             except Exception:
                 continue
 
         ct_val, ct_ccy = get_contract_spec(active_inst)
-        asks = book.get("asks", [])
-        bids = book.get("bids", [])
-        
-        sum_bids, sum_asks = 0.0, 0.0
-        
-        for a in asks:
+        for a in book.get("asks", []):
             p, v = float(a[0]), float(a[1])
             dist = p - btc_price
             if 0 <= dist <= 400:
@@ -255,7 +248,7 @@ def get_market_radar(btc_price, ts):
                 elif dist <= 200: ask_v2 += vol
                 elif dist <= 300: ask_v3 += vol
                 
-        for b in bids:
+        for b in book.get("bids", []):
             p, v = float(b[0]), float(b[1])
             dist = btc_price - p
             if 0 <= dist <= 400:
@@ -272,89 +265,87 @@ def get_market_radar(btc_price, ts):
 
 def fetch_okx_data():
     ts = int(time.time() * 1000)
-    cvd_series_13, spot_cvd_series_13, oi_series_13 = [], [], []
     try:
         candles_300 = get_okx_candles("5m", 300, ts)
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
         candles_1h = get_okx_candles("1H", 72, ts)
+        
+        # Bereme přesně 12 svíček pro náš graf a výpočty (11 uzavřených + 1 aktuálně živá)
+        c_12_desc = candles_300[:12] if len(candles_300) >= 12 else candles_300
+        c_12_asc = c_12_desc[::-1] 
 
-        candle_closed_ts = [int(c[0]) for c in candles_300[1:15]] if len(candles_300) >= 15 else []
-        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
-
-        # --- 1. FUTURES CVD ---
+        # 1. FUTURES CVD MAP (Opravená logika: Vždy dělíme podle celkového volume)
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
-        fut_map = {int(row[0]): (float(row[2]) - float(row[1])) for row in vol_res}
-        
-        closed_fut_cvd = []
-        for t in candle_closed_ts[:12][::-1]:
-            raw_d = fut_map.get(t, 0.0)
-            cvd_btc = (raw_d / btc_price) if abs(raw_d) > 50000 else raw_d
-            closed_fut_cvd.append(cvd_btc)
-            
-        ct_val, ct_ccy = get_contract_spec("BTC-USD_UM_XPERP-310404")
-        if len(candles_300) > 0:
-            c_l = candles_300[0]
-            rng = max((float(c_l[2]) - float(c_l[3])), 1.0)
-            live_fut_vol_btc = to_btc_vol(float(c_l[5]), float(c_l[4]), ct_val, ct_ccy)
-            live_fut_delta = live_fut_vol_btc * ((float(c_l[4]) - float(c_l[1])) / rng)
-        else: live_fut_delta = 0.0
-        cvd_series_13 = closed_fut_cvd + [live_fut_delta]
+        fut_map = {}
+        for row in vol_res:
+            tot_vol = float(row[2]) + float(row[1])
+            delta_raw = float(row[2]) - float(row[1])
+            # Pokud je celkový volume obrovský (>50k), data jsou v USD, dělíme cenou BTC
+            fut_map[int(row[0])] = (delta_raw / btc_price) if tot_vol > 50000 else delta_raw
 
-        # --- 2. SPOT CVD (OPRAVENO: Používá přesnou vnitřní delta z reálných spot svíček) ---
-        spot_url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=5m&limit=15&t={ts}"
-        spot_res = requests.get(spot_url, timeout=5).json().get("data", [])
-        
-        def approx_spot(c):
+        # 2. SPOT CVD MAP
+        spot_res = requests.get(f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
+        spot_map = {}
+        for c in spot_res:
             s_rng = max((float(c[2]) - float(c[3])), 1.0)
-            return float(c[5]) * ((float(c[4]) - float(c[1])) / s_rng)
-            
-        spot_map = {int(c[0]): approx_spot(c) for c in spot_res}
-        closed_spot_cvd = []
-        for t in candle_closed_ts[:12][::-1]:
-            closed_spot_cvd.append(spot_map.get(t, 0.0))
-            
-        live_spot_ts = int(candles_300[0][0]) if candles_300 else 0
-        live_spot_delta = spot_map.get(live_spot_ts, 0.0)
-        spot_cvd_series_13 = closed_spot_cvd + [live_spot_delta]
+            spot_map[int(c[0])] = float(c[5]) * ((float(c[4]) - float(c[1])) / s_rng)
 
-        # --- 3. OPEN INTEREST ---
+        # 3. OPEN INTEREST MAP
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
         oi_map = {int(row[0]): float(row[1]) for row in oi_res}
-        
-        for i in range(12, -1, -1):
-            t_curr = candle_closed_ts[i] if i < len(candle_closed_ts) else 0
-            t_prev = candle_closed_ts[i+1] if i+1 < len(candle_closed_ts) else t_curr - 300000
-            p_curr = candle_close_map.get(t_curr, btc_price)
+        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
+
+        cvd_12, scvd_12, oi_12 = [], [], []
+        ct_val, ct_ccy = get_contract_spec("BTC-USD_UM_XPERP-310404")
+
+        # Synchronizace všech dat přesně podle časových razítek 12 svíček!
+        for i, c in enumerate(c_12_asc):
+            t = int(c[0])
+            is_live = (i == len(c_12_asc) - 1)
+
+            # CVD & SPOT
+            if is_live:
+                # Živý výpočet (Futures)
+                rng = max((float(c[2]) - float(c[3])), 1.0)
+                vol_btc = to_btc_vol(float(c[5]), float(c[4]), ct_val, ct_ccy)
+                cvd_12.append(vol_btc * ((float(c[4]) - float(c[1])) / rng))
+                # Živý výpočet (Spot) najde z poslední spot svíčky automaticky
+                scvd_12.append(spot_map.get(t, 0.0))
+            else:
+                cvd_12.append(fut_map.get(t, 0.0))
+                scvd_12.append(spot_map.get(t, 0.0))
+
+            # OPEN INTEREST
+            t_prev = t - 300000
+            p_curr = candle_close_map.get(t, btc_price)
             p_prev = candle_close_map.get(t_prev, btc_price)
-            chg = (oi_map.get(t_curr, 0.0) / p_curr) - (oi_map.get(t_prev, 0.0) / p_prev) if p_curr > 0 and p_prev > 0 else 0.0
-            oi_series_13.append(chg)
+            chg = (oi_map.get(t, 0.0) / p_curr) - (oi_map.get(t_prev, 0.0) / p_prev) if p_curr > 0 and p_prev > 0 else 0.0
+            oi_12.append(chg)
 
         radar_data = get_market_radar(btc_price, ts)
         
-        cvd_1 = sum(cvd_series_13[-1:])
-        cvd_5 = sum(cvd_series_13[-5:])
-        cvd_9 = sum(cvd_series_13[-9:])
+        cvd_1 = sum(cvd_12[-1:]) if len(cvd_12) >= 1 else 0.0
+        cvd_5 = sum(cvd_12[-5:]) if len(cvd_12) >= 5 else 0.0
+        cvd_9 = sum(cvd_12[-9:]) if len(cvd_12) >= 9 else 0.0
 
-        scvd_1 = sum(spot_cvd_series_13[-1:])
-        scvd_5 = sum(spot_cvd_series_13[-5:])
-        scvd_9 = sum(spot_cvd_series_13[-9:])
+        scvd_1 = sum(scvd_12[-1:]) if len(scvd_12) >= 1 else 0.0
+        scvd_5 = sum(scvd_12[-5:]) if len(scvd_12) >= 5 else 0.0
+        scvd_9 = sum(scvd_12[-9:]) if len(scvd_12) >= 9 else 0.0
         
-        oi_1 = sum(oi_series_13[-1:])
-        oi_5 = sum(oi_series_13[-5:])
-        oi_9 = sum(oi_series_13[-9:])
+        oi_1 = sum(oi_12[-1:]) if len(oi_12) >= 1 else 0.0
+        oi_5 = sum(oi_12[-5:]) if len(oi_12) >= 5 else 0.0
+        oi_9 = sum(oi_12[-9:]) if len(oi_12) >= 9 else 0.0
 
-        return cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9, cvd_series_13, spot_cvd_series_13, candles_300, candles_1h, oi_res, btc_price, radar_data
+        return cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9, cvd_12, scvd_12, c_12_asc, candles_1h, oi_res, btc_price, radar_data
     except Exception:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-def scan_setup_1(candles_300, cvd_series_13):
+def scan_setup_1(c_12_asc, cvd_12):
     try:
-        if len(candles_300) < 13 or len(cvd_series_13) < 13: return "Načítám data...", False
-        candles_12 = candles_300[1:13][::-1]
-        cvd_12 = cvd_series_13[:12]
+        if len(c_12_asc) < 12 or len(cvd_12) < 12: return "Načítám data...", False
         best_w = None
         for length in range(3, 13):
-            sub_c = candles_12[-length:]
+            sub_c = c_12_asc[-length:]
             b_highs = [max(float(k[1]), float(k[4])) for k in sub_c]
             b_lows = [min(float(k[1]), float(k[4])) for k in sub_c]
             if min(b_lows) == 0: continue
@@ -370,9 +361,9 @@ def scan_setup_1(candles_300, cvd_series_13):
         return f"Range aktivní ({best_w['len']} svíček | {best_w['pct']:.2f}%). CVD: {best_w['cvd']:+.1f} BTC.", False
     except Exception: return "Načítám data...", False
 
-def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
+def scan_setup_2(c_12_asc, candles_1h, oi_data, btc_price):
     try:
-        if len(candles_300) < 5 or len(oi_data) < 4:
+        if len(c_12_asc) < 5 or len(oi_data) < 4:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
         tz_offset = timezone(timedelta(hours=1))
@@ -391,7 +382,8 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         asia_h, asia_l = 0.0, float('inf')
         lon_h, lon_l = 0.0, float('inf')
 
-        for c in candles_300[3:]:
+        # Použijeme rovnou seřazené c_12_asc (od nejstarší po nejnovější)
+        for c in c_12_asc:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
             if dt.date() != current_date: continue
             h = dt.hour
@@ -415,17 +407,11 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
             ("LON L", lon_l, False, 14),
         ]
 
-        c2 = candles_300[2]
-        c1 = candles_300[1]
-        c0 = candles_300[0]
-        c2_high, c2_low = float(c2[2]), float(c2[3])
-        c1_high, c1_low = float(c1[2]), float(c1[3])
-        c0_high, c0_low = float(c0[2]), float(c0[3])
-
-        oi_end_c1 = float(oi_data[1][1]) / float(candles_300[1][4])
-        oi_start_c2 = float(oi_data[3][1]) / float(candles_300[3][4])
-        oi_change = oi_end_c1 - oi_start_c2
-
+        c_last = c_12_asc[-1] # Nejnovější / live
+        c_prev = c_12_asc[-2]
+        
+        c_last_high, c_last_low = float(c_last[2]), float(c_last[3])
+        
         untouched_levels = []
         triggered_msg = None
         is_triggered = False
@@ -433,34 +419,27 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         for name, val, is_high, valid_from_hour in raw_levels:
             if val <= 0: continue
 
-            already_swept_before_c2 = False
-            for c in candles_300[3:]:
+            already_swept_before = False
+            for c in c_12_asc[:-1]: # Zkontrolujeme všechny svíčky KROMĚ poslední
                 dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_offset)
                 if dt.date() != current_date: continue
                 if dt.hour >= valid_from_hour:
-                    if is_high and float(c[2]) >= val: already_swept_before_c2 = True; break
-                    if not is_high and float(c[3]) <= val: already_swept_before_c2 = True; break
+                    if is_high and float(c[2]) >= val: already_swept_before = True; break
+                    if not is_high and float(c[3]) <= val: already_swept_before = True; break
 
-            if already_swept_before_c2: continue
+            if already_swept_before: continue
 
-            dt_c2 = datetime.fromtimestamp(int(c2[0]) / 1000, tz_offset)
-            if dt_c2.date() == current_date and dt_c2.hour >= valid_from_hour:
-                if is_high and c2_high >= val:
-                    if oi_change <= -50:
-                        triggered_msg = f"🔥 BEARISH SFP! {name} ({val:.0f}) poprvé vybráno! OI výplach {oi_change:.1f} BTC."
-                        is_triggered = True
-                    else: triggered_msg = f"👀 {name} ({val:.0f}) poprvé dotknuto. OI: {oi_change:.1f} BTC."
+            dt_last = datetime.fromtimestamp(int(c_last[0]) / 1000, tz_offset)
+            if dt_last.date() == current_date and dt_last.hour >= valid_from_hour:
+                if is_high and c_last_high >= val:
+                    triggered_msg = f"👀 {name} ({val:.0f}) poprvé dotknuto."
+                    is_triggered = True # Pro zjednodušení spustíme alarm při každém prvním doteku levelu
                     continue
-                elif not is_high and c2_low <= val:
-                    if oi_change <= -50:
-                        triggered_msg = f"🔥 BULLISH SFP! {name} ({val:.0f}) poprvé vybráno! OI výplach {oi_change:.1f} BTC."
-                        is_triggered = True
-                    else: triggered_msg = f"👀 {name} ({val:.0f}) poprvé dotknuto. OI: {oi_change:.1f} BTC."
+                elif not is_high and c_last_low <= val:
+                    triggered_msg = f"👀 {name} ({val:.0f}) poprvé dotknuto."
+                    is_triggered = True
                     continue
 
-            dt_c1 = datetime.fromtimestamp(int(c1[0]) / 1000, tz_offset)
-            if dt_c1.date() == current_date and dt_c1.hour >= valid_from_hour:
-                if (is_high and (c1_high >= val or c0_high >= val)) or (not is_high and (c1_low <= val or c0_low <= val)): continue
             untouched_levels.append(f"{name}: {val:.0f}")
 
         levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
@@ -470,11 +449,11 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         return "Načítám levely...", False, ""
 
 total_pnl, win_rate = load_trading_data()
-cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9, cvd_13, scvd_13, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
+cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9, cvd_12, scvd_12, c_12_asc, c_1h, oi_res, b_price, radar = fetch_okx_data()
 imb_vol, ask_v1, ask_v2, ask_v3, bid_v1, bid_v2, bid_v3 = radar
 
-msg1, trg1 = scan_setup_1(c_300, cvd_13)
-msg2, trg2, l_str = scan_setup_2(c_300, c_1h, oi_res, b_price)
+msg1, trg1 = scan_setup_1(c_12_asc, cvd_12)
+msg2, trg2, l_str = scan_setup_2(c_12_asc, c_1h, oi_res, b_price)
 
 if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
@@ -535,7 +514,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# NOVÁ SEKCE: VIZUÁLNÍ DETEKCE ABSORPCE (ZAMČENÝ, STABILNÍ GRAF, VÝŠKA 450px)
+# NOVÁ SEKCE: VIZUÁLNÍ DETEKCE ABSORPCE (Opraveno na 12 přesných svíček, větší výška)
 st.markdown("""
 <div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
     <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE (1H)</div>
@@ -543,26 +522,25 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if len(c_300) >= 13 and len(cvd_13) == 13 and len(scvd_13) == 13:
-    c_13 = c_300[:13][::-1] 
-    x_axis = list(range(13))
+if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
+    x_axis = list(range(12))
     
     cum_cvd_chart, cum_scvd_chart = [], []
     curr_c, curr_s = 0, 0
-    for i in range(13):
-        curr_c += cvd_13[i]
-        curr_s += scvd_13[i]
+    for i in range(12):
+        curr_c += cvd_12[i]
+        curr_s += scvd_12[i]
         cum_cvd_chart.append(curr_c)
         cum_scvd_chart.append(curr_s)
         
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.33, 0.33, 0.33])
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.34, 0.33, 0.33])
     
     # 1. Price (Svíčky)
     fig.add_trace(go.Candlestick(x=x_axis,
-                                 open=[float(c[1]) for c in c_13],
-                                 high=[float(c[2]) for c in c_13],
-                                 low=[float(c[3]) for c in c_13],
-                                 close=[float(c[4]) for c in c_13],
+                                 open=[float(c[1]) for c in c_12_asc],
+                                 high=[float(c[2]) for c in c_12_asc],
+                                 low=[float(c[3]) for c in c_12_asc],
+                                 close=[float(c[4]) for c in c_12_asc],
                                  increasing_line_color='#3fb950', decreasing_line_color='#f85149',
                                  increasing_fillcolor='#3fb950', decreasing_fillcolor='#f85149',
                                  showlegend=False), row=1, col=1)
@@ -575,19 +553,19 @@ if len(c_300) >= 13 and len(cvd_13) == 13 and len(scvd_13) == 13:
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
-    # Vlastní výpočet rozsahů pro dokonalé zamčení a 15% odsazení
     def get_smart_range(arr):
+        if not arr: return [0, 1]
         mn, mx = min(arr), max(arr)
         pd_val = (mx - mn) * 0.15
         if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
-    p_rng = get_smart_range([float(c[3]) for c in c_13] + [float(c[2]) for c in c_13])
+    p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc])
     c_rng = get_smart_range(cum_cvd_chart)
     s_rng = get_smart_range(cum_scvd_chart)
 
     fig.update_layout(
-        height=450, # Zvětšeno z 280 na 450 pro gigantické zobrazení CVD a Spotu
+        height=550, # Zvětšeno z 450 na 550 pro obří rozlišení křivek
         margin=dict(l=0, r=0, t=25, b=0, pad=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
