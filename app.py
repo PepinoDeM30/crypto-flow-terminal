@@ -190,17 +190,14 @@ def get_contract_spec(inst_id):
                     return ct_val, ct_ccy
             except Exception:
                 continue
-    if "UM_XPERP" in inst_id or "USDC" in inst_id:
-        return 0.0001, "BTC"
-    elif "USDT" in inst_id:
-        return 0.01, "BTC"
-    return 100.0, "USD"
+    return 0.0001, "BTC"
 
 def get_okx_candles(bar, limit, ts):
+    # Cílíme striktně na tvůj X-Perp kontrakt
     urls = [
-        f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}",
-        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}",
-        f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USDT&bar={bar}&limit={limit}&t={ts}"
+        f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}"
     ]
     for u in urls:
         try:
@@ -221,11 +218,11 @@ def get_market_radar(btc_price, ts):
     bid_v1, bid_v2, bid_v3 = 0.0, 0.0, 0.0
     try:
         endpoints = [
-            ("https://www.okx.com/api/v5/market/books?instId=BTC-USD-SWAP&sz=400", "BTC-USD-SWAP"),
-            ("https://eea.okx.com/api/v5/market/books?instId=BTC-USD-SWAP&sz=400", "BTC-USD-SWAP"),
-            ("https://www.okx.com/api/v5/market/books?instId=BTC-USDT&sz=400", "BTC-USDT")
+            ("https://www.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400", "BTC-USD_UM_XPERP-310404"),
+            ("https://eea.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400", "BTC-USD_UM_XPERP-310404"),
+            ("https://www.okx.com/api/v5/market/books?instId=BTC-USD-SWAP&sz=400", "BTC-USD-SWAP")
         ]
-        book, active_inst = {}, "BTC-USD-SWAP"
+        book, active_inst = {}, "BTC-USD_UM_XPERP-310404"
         for bu, inst_name in endpoints:
             try:
                 res = requests.get(bu, timeout=5).json().get("data", [])
@@ -259,6 +256,15 @@ def get_market_radar(btc_price, ts):
         pass
     return imb_vol, ask_v1, ask_v2, ask_v3, bid_v1, bid_v2, bid_v3
 
+def get_stat_val(map_dict, target_ts, tolerance=300000):
+    """Bezpečné vyhledání hodnoty s tolerancí 5 minut pro eliminaci chyb časových razítek."""
+    if target_ts in map_dict:
+        return map_dict[target_ts]
+    for ts_key, val in map_dict.items():
+        if abs(ts_key - target_ts) <= tolerance:
+            return val
+    return 0.0
+
 def fetch_okx_data():
     ts = int(time.time() * 1000)
     try:
@@ -266,42 +272,67 @@ def fetch_okx_data():
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
         candles_1h = get_okx_candles("1H", 72, ts)
         
-        # Bereme čistých 12 UZAVŘENÝCH svíček pro křivky (stabilní historie)
+        # Striktně 12 UZAVŘENÝCH svíček pro stabilní historii křivek
         c_12_desc = candles_300[1:13] if len(candles_300) >= 13 else candles_300[:12]
         c_12_asc = c_12_desc[::-1] 
 
-        # 1. FUTURES CVD MAP (Uzavřené 5M svíčky)
-        vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=20&t={ts}", timeout=6).json().get("data", [])
+        # 1. FUTURES CVD MAP
+        vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=30&t={ts}", timeout=6).json().get("data", [])
         fut_map = {}
         for row in vol_res:
-            tot_vol = float(row[2]) + float(row[1])
-            delta_raw = float(row[2]) - float(row[1])
-            fut_map[int(row[0])] = (delta_raw / btc_price) if tot_vol > 50000 else delta_raw
+            try:
+                row_ts = int(row[0])
+                sell_v = float(row[1])
+                buy_v = float(row[2])
+                tot_vol = sell_v + buy_v
+                delta_raw = buy_v - sell_v
+                fut_map[row_ts] = (delta_raw / btc_price) if tot_vol > 50000 else delta_raw
+            except:
+                continue
 
-        # 2. SPOT CVD MAP (Uzavřené 5M svíčky)
-        spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=20&t={ts}", timeout=6).json().get("data", [])
+        # 2. SPOT CVD MAP
+        spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=30&t={ts}", timeout=6).json().get("data", [])
         spot_map = {}
         for row in spot_res:
-            tot_vol = float(row[2]) + float(row[1])
-            delta_raw = float(row[2]) - float(row[1])
-            spot_map[int(row[0])] = (delta_raw / btc_price) if tot_vol > 50000 else delta_raw
+            try:
+                row_ts = int(row[0])
+                sell_v = float(row[1])
+                buy_v = float(row[2])
+                tot_vol = sell_v + buy_v
+                delta_raw = buy_v - sell_v
+                spot_map[row_ts] = (delta_raw / btc_price) if tot_vol > 50000 else delta_raw
+            except:
+                continue
 
         # 3. OPEN INTEREST MAP
-        oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=20&t={ts}", timeout=6).json().get("data", [])
-        oi_map = {int(row[0]): float(row[1]) for row in oi_res}
+        oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=30&t={ts}", timeout=6).json().get("data", [])
+        oi_map = {}
+        for row in oi_res:
+            try:
+                row_ts = int(row[0])
+                oi_map[row_ts] = float(row[1])
+            except:
+                continue
+
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
         cvd_12, scvd_12, oi_12 = [], [], []
 
         for i, c in enumerate(c_12_asc):
             t = int(c[0])
-            cvd_12.append(fut_map.get(t, 0.0))
-            scvd_12.append(spot_map.get(t, 0.0))
+            cvd_12.append(get_stat_val(fut_map, t))
+            scvd_12.append(get_stat_val(spot_map, t))
 
             t_prev = t - 300000
             p_curr = candle_close_map.get(t, btc_price)
             p_prev = candle_close_map.get(t_prev, btc_price)
-            chg = (oi_map.get(t, 0.0) / p_curr) - (oi_map.get(t_prev, 0.0) / p_prev) if p_curr > 0 and p_prev > 0 else 0.0
+            oi_curr = get_stat_val(oi_map, t)
+            oi_prev = get_stat_val(oi_map, t_prev)
+            
+            if p_curr > 0 and p_prev > 0 and oi_curr > 0 and oi_prev > 0:
+                chg = (oi_curr / p_curr) - (oi_prev / p_prev)
+            else:
+                chg = 0.0
             oi_12.append(chg)
 
         radar_data = get_market_radar(btc_price, ts)
@@ -447,9 +478,9 @@ c_scvd1 = '#3fb950' if scvd1 >= 0 else '#f85149'
 c_scvd5 = '#3fb950' if scvd5 >= 0 else '#f85149'
 c_scvd9 = '#3fb950' if scvd9 >= 0 else '#f85149'
 
-c_oi1 = '#3fb950' if oi1 >= 0 else '#3fb950'
-c_oi5 = '#3fb950' if oi5 >= 0 else '#3fb950'
-c_oi9 = '#3fb950' if oi9 >= 0 else '#3fb950'
+c_oi1 = '#3fb950' if oi1 >= 0 else '#f85149'
+c_oi5 = '#3fb950' if oi5 >= 0 else '#f85149'
+c_oi9 = '#3fb950' if oi9 >= 0 else '#f85149'
 
 pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
 pnl_sign = '+$' if total_pnl >= 0 else '-$'
