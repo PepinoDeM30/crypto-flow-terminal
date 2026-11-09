@@ -101,7 +101,7 @@ iframe[height="0"] {display: none !important;}
     background-size: cover;
     border: 1px solid #2dd4bf; 
     border-radius: 16px; 
-    padding: 20px 12px 25px 12px; 
+    padding: 20px 10px 25px 10px; 
     text-align: center; 
     margin-bottom: 18px; 
     box-shadow: 0 5px 30px rgba(0, 243, 255, 0.15); 
@@ -123,7 +123,7 @@ iframe[height="0"] {display: none !important;}
     box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);
 }
 
-/* SETUP KARTY - Vycentrované texty a jednotná výška */
+/* SETUP KARTY */
 .alert-box { 
     background: rgba(13, 19, 31, 0.35); 
     border: 1px solid rgba(31, 41, 55, 0.6); 
@@ -185,19 +185,45 @@ def load_trading_data():
     except Exception:
         return 0.0, 0.0
 
+@st.cache_data(ttl=3600)
+def get_contract_spec(inst_id):
+    """Zjistí přesnou velikost kontraktu (ctVal a měnu) přímo z OKX, aby nedocházelo k zkreslení."""
+    for inst_type in ["SWAP", "FUTURES"]:
+        for host in ["https://eea.okx.com", "https://www.okx.com"]:
+            try:
+                url = f"{host}/api/v5/public/instruments?instType={inst_type}&instId={inst_id}"
+                data = requests.get(url, timeout=3).json().get("data", [])
+                if data:
+                    ct_val = float(data[0].get("ctVal", 0.0001))
+                    ct_ccy = data[0].get("ctValCcy", "BTC")
+                    return ct_val, ct_ccy
+            except Exception:
+                continue
+    if "UM_XPERP" in inst_id or "USDC" in inst_id:
+        return 0.0001, "BTC"
+    elif "USDT" in inst_id:
+        return 0.01, "BTC"
+    return 100.0, "USD"
+
 def get_okx_candles(bar, limit, ts):
     urls = [
-        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
         f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDC-SWAP&bar={bar}&limit={limit}&t={ts}",
         f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}"
     ]
     for u in urls:
         try:
-            data = requests.get(u, timeout=5).json().get("data", [])
+            data = requests.get(u, timeout=4).json().get("data", [])
             if data: return data
         except Exception:
             continue
     return []
+
+def to_btc_vol(raw_contracts, price, ct_val, ct_ccy):
+    if ct_ccy == "BTC":
+        return raw_contracts * ct_val
+    return (raw_contracts * ct_val) / price if price > 0 else 0.0
 
 def get_market_radar(btc_price, ts):
     imb_vol = 0.0
@@ -205,44 +231,53 @@ def get_market_radar(btc_price, ts):
     bid_v1, bid_v2, bid_v3 = 0.0, 0.0, 0.0
     
     try:
-        book_urls = [
-            f"https://www.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400&t={ts}",
-            f"https://eea.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400&t={ts}",
-            f"https://www.okx.com/api/v5/market/books?instId=BTC-USD-SWAP&sz=400&t={ts}"
+        # Prioritně bereme books-full (až 5000 úrovní), aby 3. pásmo nikdy nevyschlo
+        endpoints = [
+            ("https://eea.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
+            ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
+            ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USDC-SWAP&sz=5000", "BTC-USDC-SWAP"),
+            ("https://eea.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400", "BTC-USD_UM_XPERP-310404"),
+            ("https://www.okx.com/api/v5/market/books?instId=BTC-USDC-SWAP&sz=400", "BTC-USDC-SWAP"),
+            ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USD-SWAP&sz=5000", "BTC-USD-SWAP")
         ]
         book = {}
-        for bu in book_urls:
-            res = requests.get(bu, timeout=4).json().get("data", [])
-            if res:
-                book = res[0]
-                break
+        active_inst = "BTC-USD_UM_XPERP-310404"
+        for bu, inst_name in endpoints:
+            try:
+                res = requests.get(bu, timeout=4).json().get("data", [])
+                if res and (res[0].get("asks") or res[0].get("bids")):
+                    book = res[0]
+                    active_inst = inst_name
+                    break
+            except Exception:
+                continue
 
+        ct_val, ct_ccy = get_contract_spec(active_inst)
         asks = book.get("asks", [])
         bids = book.get("bids", [])
         
         sum_bids, sum_asks = 0.0, 0.0
         
-        # Sběr Asků s opravenou logikou pásem
+        # 3 čistá pásma po 100 USD (0-100, 100-200, 200-300) + celkový součet do 400 USD
         for a in asks:
             p, v = float(a[0]), float(a[1])
-            if p <= btc_price + 400:
-                vol = (v * 100) / p
+            dist = p - btc_price
+            if 0 <= dist <= 400:
+                vol = to_btc_vol(v, p, ct_val, ct_ccy)
                 sum_asks += vol
-                dist = p - btc_price
                 if dist <= 100: ask_v1 += vol
                 elif dist <= 200: ask_v2 += vol
-                elif dist <= 400: ask_v3 += vol
+                elif dist <= 300: ask_v3 += vol
                 
-        # Sběr Bidů s opravenou logikou pásem (již nebude padat do nuly)
         for b in bids:
             p, v = float(b[0]), float(b[1])
-            if p >= btc_price - 400:
-                vol = (v * 100) / p
+            dist = btc_price - p
+            if 0 <= dist <= 400:
+                vol = to_btc_vol(v, p, ct_val, ct_ccy)
                 sum_bids += vol
-                dist = btc_price - p
                 if dist <= 100: bid_v1 += vol
                 elif dist <= 200: bid_v2 += vol
-                elif dist <= 400: bid_v3 += vol
+                elif dist <= 300: bid_v3 += vol
                 
         imb_vol = sum_bids - sum_asks
     except Exception:
@@ -252,25 +287,39 @@ def get_market_radar(btc_price, ts):
 
 def fetch_okx_data():
     ts = int(time.time() * 1000)
-    cvd_series_12, oi_series_12 = [], []
+    cvd_series_12, spot_cvd_series_12, oi_series_12 = [], [], []
     try:
         candles_300 = get_okx_candles("5m", 300, ts)
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
         candles_1h = get_okx_candles("1H", 72, ts)
 
+        # Mapa uzavřených cen podle timestampu svíčky (odstranění falešného přepočtu živou cenou)
+        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
+
+        # 1. FUTURES CVD (5m uzavřené svíčky, unit=1 je přímo v BTC)
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
         vol_res = requests.get(vol_url, timeout=5).json().get("data", [])
         if len(vol_res) >= 12:
             for row in vol_res[:12][::-1]:
-                delta_raw = float(row[2]) - float(row[1])
-                cvd_series_12.append((delta_raw / btc_price) if (float(row[2]) + float(row[1])) > 50000 else delta_raw)
+                cvd_series_12.append(float(row[2]) - float(row[1]))
 
+        # 2. SPOT CVD (5m uzavřené svíčky, unit=1 je přímo v BTC)
+        spot_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&unit=1&t={ts}"
+        spot_res = requests.get(spot_url, timeout=5).json().get("data", [])
+        if len(spot_res) >= 12:
+            for row in spot_res[:12][::-1]:
+                spot_cvd_series_12.append(float(row[2]) - float(row[1]))
+
+        # 3. OPEN INTEREST (5m uzavřené svíčky spárované s uzavřenou cenou dané svíčky)
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=13&t={ts}"
         oi_res = requests.get(oi_url, timeout=5).json().get("data", [])
-        if len(oi_res) >= 13 and len(candles_300) >= 13:
+        if len(oi_res) >= 13 and len(candles_300) >= 14:
             for i in range(12, 0, -1):
-                p_curr = float(candles_300[i-1][4])
-                p_prev = float(candles_300[i][4])
+                ts_curr = int(oi_res[i-1][0])
+                ts_prev = int(oi_res[i][0])
+                # Použijeme přesnou uzavírací cenu svíčky se stejným timestampem (ne živou cenu!)
+                p_curr = candle_close_map.get(ts_curr, float(candles_300[i][4]))
+                p_prev = candle_close_map.get(ts_prev, float(candles_300[i+1][4]))
                 oi_series_12.append((float(oi_res[i-1][1]) / p_curr) - (float(oi_res[i][1]) / p_prev))
         else:
             oi_series_12 = [0.0] * 12
@@ -280,14 +329,18 @@ def fetch_okx_data():
         cvd_1 = sum(cvd_series_12[-1:]) if len(cvd_series_12) >= 1 else 0.0
         cvd_5 = sum(cvd_series_12[-5:]) if len(cvd_series_12) >= 5 else 0.0
         cvd_9 = sum(cvd_series_12[-9:]) if len(cvd_series_12) >= 9 else 0.0
+
+        scvd_1 = sum(spot_cvd_series_12[-1:]) if len(spot_cvd_series_12) >= 1 else 0.0
+        scvd_5 = sum(spot_cvd_series_12[-5:]) if len(spot_cvd_series_12) >= 5 else 0.0
+        scvd_9 = sum(spot_cvd_series_12[-9:]) if len(spot_cvd_series_12) >= 9 else 0.0
         
         oi_1 = sum(oi_series_12[-1:]) if len(oi_series_12) >= 1 else 0.0
         oi_5 = sum(oi_series_12[-5:]) if len(oi_series_12) >= 5 else 0.0
         oi_9 = sum(oi_series_12[-9:]) if len(oi_series_12) >= 9 else 0.0
 
-        return cvd_1, cvd_5, cvd_9, oi_1, oi_5, oi_9, cvd_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
+        return cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9, cvd_series_12, candles_300, candles_1h, oi_res, btc_price, radar_data
     except Exception:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, [], [], [], [], 76000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 def scan_setup_1(candles_300, cvd_series_12):
     try:
@@ -423,7 +476,7 @@ def scan_setup_2(candles_300, candles_1h, oi_data, btc_price):
         return "Načítám levely...", False, ""
 
 total_pnl, win_rate = load_trading_data()
-cvd1, cvd5, cvd9, oi1, oi5, oi9, cvd_12, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
+cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9, cvd_12, c_300, c_1h, oi_res, b_price, radar = fetch_okx_data()
 imb_vol, ask_v1, ask_v2, ask_v3, bid_v1, bid_v2, bid_v3 = radar
 
 msg1, trg1 = scan_setup_1(c_300, cvd_12)
@@ -437,6 +490,11 @@ imb_color = '#3fb950' if imb_vol >= 0 else '#f85149'
 c_cvd1 = '#3fb950' if cvd1 >= 0 else '#f85149'
 c_cvd5 = '#3fb950' if cvd5 >= 0 else '#f85149'
 c_cvd9 = '#3fb950' if cvd9 >= 0 else '#f85149'
+
+c_scvd1 = '#3fb950' if scvd1 >= 0 else '#f85149'
+c_scvd5 = '#3fb950' if scvd5 >= 0 else '#f85149'
+c_scvd9 = '#3fb950' if scvd9 >= 0 else '#f85149'
+
 c_oi1 = '#3fb950' if oi1 >= 0 else '#f85149'
 c_oi5 = '#3fb950' if oi5 >= 0 else '#f85149'
 c_oi9 = '#3fb950' if oi9 >= 0 else '#f85149'
@@ -465,15 +523,19 @@ st.markdown(f"""
 <div style="text-align: center; margin-bottom: 28px;">
 <span style="font-size: 26px; font-weight: 900; color: {imb_color}; text-shadow: 0px 2px 8px rgba(0,0,0,0.8);">{imb_vol:+,.1f}</span>
 </div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; align-items: center; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 15px;">
-<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">CVD</div>
-<div style="color: #e2e8f0; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">OI</div>
-<div style="font-size: 34px; font-weight: 900; color: {c_cvd1};">{cvd1:+,.1f}</div>
-<div style="font-size: 34px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f}</div>
-<div style="font-size: 26px; font-weight: 900; color: {c_cvd5}; opacity: 0.85;">{cvd5:+,.1f}</div>
-<div style="font-size: 26px; font-weight: 900; color: {c_oi5}; opacity: 0.85;">{oi5:+,.1f}</div>
-<div style="font-size: 20px; font-weight: 900; color: {c_cvd9}; opacity: 0.7;">{cvd9:+,.1f}</div>
-<div style="font-size: 20px; font-weight: 900; color: {c_oi9}; opacity: 0.7;">{oi9:+,.1f}</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: center; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 15px;">
+<div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">CVD</div>
+<div style="color: #00f3ff; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">SPOT</div>
+<div style="color: #e2e8f0; font-size: 13px; font-weight: 900; letter-spacing: 1px; text-shadow: 0px 2px 6px rgba(0,0,0,1);">OI</div>
+<div style="font-size: 28px; font-weight: 900; color: {c_cvd1};">{cvd1:+,.1f}</div>
+<div style="font-size: 28px; font-weight: 900; color: {c_scvd1};">{scvd1:+,.1f}</div>
+<div style="font-size: 28px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f}</div>
+<div style="font-size: 22px; font-weight: 900; color: {c_cvd5}; opacity: 0.85;">{cvd5:+,.1f}</div>
+<div style="font-size: 22px; font-weight: 900; color: {c_scvd5}; opacity: 0.85;">{scvd5:+,.1f}</div>
+<div style="font-size: 22px; font-weight: 900; color: {c_oi5}; opacity: 0.85;">{oi5:+,.1f}</div>
+<div style="font-size: 18px; font-weight: 900; color: {c_cvd9}; opacity: 0.7;">{cvd9:+,.1f}</div>
+<div style="font-size: 18px; font-weight: 900; color: {c_scvd9}; opacity: 0.7;">{scvd9:+,.1f}</div>
+<div style="font-size: 18px; font-weight: 900; color: {c_oi9}; opacity: 0.7;">{oi9:+,.1f}</div>
 </div>
 </div>
 """, unsafe_allow_html=True)
@@ -501,7 +563,7 @@ st.markdown(f"""
 </div>
 <div style="text-align: center;">
 <div style="color: #f1e05a; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">WIN RATE</div>
-<div style="font-size: 34px; font-weight: 900; color: #f1e05a; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
+<div style="font-size: 34px; font-weight: 900; color: {pnl_color if False else '#f1e05a'}; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
 </div>
 </div>
 </div>
