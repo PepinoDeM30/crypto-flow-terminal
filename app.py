@@ -196,10 +196,11 @@ def get_contract_spec(inst_id):
         return 0.01, "BTC"
     return 100.0, "USD"
 
-def get_okx_candles(bar, limit, ts, inst="BTC-USD_UM_XPERP-310404"):
+def get_okx_candles(bar, limit, ts):
     urls = [
-        f"https://eea.okx.com/api/v5/market/candles?instId={inst}&bar={bar}&limit={limit}&t={ts}",
-        f"https://www.okx.com/api/v5/market/candles?instId={inst}&bar={bar}&limit={limit}&t={ts}",
+        f"https://eea.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD_UM_XPERP-310404&bar={bar}&limit={limit}&t={ts}",
+        f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDC-SWAP&bar={bar}&limit={limit}&t={ts}",
         f"https://www.okx.com/api/v5/market/candles?instId=BTC-USD-SWAP&bar={bar}&limit={limit}&t={ts}"
     ]
     for u in urls:
@@ -209,15 +210,6 @@ def get_okx_candles(bar, limit, ts, inst="BTC-USD_UM_XPERP-310404"):
         except Exception:
             continue
     return []
-
-def get_okx_spot_candle():
-    try:
-        res = requests.get("https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=5m&limit=1", timeout=3).json()
-        if res and res.get("data"):
-            return res["data"][0]
-    except:
-        pass
-    return None
 
 def to_btc_vol(raw_contracts, price, ct_val, ct_ccy):
     if ct_ccy == "BTC":
@@ -232,67 +224,64 @@ def get_market_radar(btc_price, ts):
         endpoints = [
             ("https://eea.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
             ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
+            ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USDC-SWAP&sz=5000", "BTC-USDC-SWAP"),
             ("https://eea.okx.com/api/v5/market/books?instId=BTC-USD_UM_XPERP-310404&sz=400", "BTC-USD_UM_XPERP-310404")
         ]
-        book, active_inst = {}, "BTC-USD_UM_XPERP-310404"
+        book = {}
+        active_inst = "BTC-USD_UM_XPERP-310404"
         for bu, inst_name in endpoints:
             try:
                 res = requests.get(bu, timeout=4).json().get("data", [])
                 if res and (res[0].get("asks") or res[0].get("bids")):
-                    book, active_inst = res[0], inst_name
+                    book = res[0]
+                    active_inst = inst_name
                     break
             except Exception:
                 continue
 
         ct_val, ct_ccy = get_contract_spec(active_inst)
-        for a in book.get("asks", []):
+        asks = book.get("asks", [])
+        bids = book.get("bids", [])
+        
+        sum_bids, sum_asks = 0.0, 0.0
+        
+        for a in asks:
             p, v = float(a[0]), float(a[1])
             dist = p - btc_price
             if 0 <= dist <= 400:
                 vol = to_btc_vol(v, p, ct_val, ct_ccy)
-                imb_vol -= vol
+                sum_asks += vol
                 if dist <= 100: ask_v1 += vol
                 elif dist <= 200: ask_v2 += vol
                 elif dist <= 300: ask_v3 += vol
                 
-        for b in book.get("bids", []):
+        for b in bids:
             p, v = float(b[0]), float(b[1])
             dist = btc_price - p
             if 0 <= dist <= 400:
                 vol = to_btc_vol(v, p, ct_val, ct_ccy)
-                imb_vol += vol
+                sum_bids += vol
                 if dist <= 100: bid_v1 += vol
                 elif dist <= 200: bid_v2 += vol
                 elif dist <= 300: bid_v3 += vol
+                
+        imb_vol = sum_bids - sum_asks
     except Exception:
         pass
     return imb_vol, ask_v1, ask_v2, ask_v3, bid_v1, bid_v2, bid_v3
 
 def fetch_okx_data():
     ts = int(time.time() * 1000)
+    cvd_series_13, spot_cvd_series_13, oi_series_13 = [], [], []
     try:
         candles_300 = get_okx_candles("5m", 300, ts)
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
         candles_1h = get_okx_candles("1H", 72, ts)
-        
-        # 1. ŽIVÝ ODHAD (Intra-bar Delta Approximation)
-        if len(candles_300) > 0:
-            c_l = candles_300[0]
-            rng = max((float(c_l[2]) - float(c_l[3])), 1.0)
-            live_fut_delta = float(c_l[6]) * ((float(c_l[4]) - float(c_l[1])) / rng)
-        else:
-            live_fut_delta = 0.0
-
-        spot_c = get_okx_spot_candle()
-        if spot_c:
-            s_rng = max((float(spot_c[2]) - float(spot_c[3])), 1.0)
-            live_spot_delta = float(spot_c[6]) * ((float(spot_c[4]) - float(spot_c[1])) / s_rng)
-        else:
-            live_spot_delta = 0.0
 
         candle_closed_ts = [int(c[0]) for c in candles_300[1:15]] if len(candles_300) >= 15 else []
+        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # 2. FUTURES CVD (Uzavřené)
+        # --- 1. FUTURES CVD ---
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
         fut_map = {int(row[0]): (float(row[2]) - float(row[1])) for row in vol_res}
         
@@ -302,24 +291,36 @@ def fetch_okx_data():
             cvd_btc = (raw_d / btc_price) if abs(raw_d) > 50000 else raw_d
             closed_fut_cvd.append(cvd_btc)
             
+        ct_val, ct_ccy = get_contract_spec("BTC-USD_UM_XPERP-310404")
+        if len(candles_300) > 0:
+            c_l = candles_300[0]
+            rng = max((float(c_l[2]) - float(c_l[3])), 1.0)
+            live_fut_vol_btc = to_btc_vol(float(c_l[5]), float(c_l[4]), ct_val, ct_ccy)
+            live_fut_delta = live_fut_vol_btc * ((float(c_l[4]) - float(c_l[1])) / rng)
+        else: live_fut_delta = 0.0
         cvd_series_13 = closed_fut_cvd + [live_fut_delta]
 
-        # 3. SPOT CVD (Uzavřené)
-        spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
-        spot_map = {int(row[0]): (float(row[2]) - float(row[1])) for row in spot_res}
+        # --- 2. SPOT CVD (OPRAVENO: Používá přesnou vnitřní delta z reálných spot svíček) ---
+        spot_url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=5m&limit=15&t={ts}"
+        spot_res = requests.get(spot_url, timeout=5).json().get("data", [])
         
+        def approx_spot(c):
+            s_rng = max((float(c[2]) - float(c[3])), 1.0)
+            return float(c[5]) * ((float(c[4]) - float(c[1])) / s_rng)
+            
+        spot_map = {int(c[0]): approx_spot(c) for c in spot_res}
         closed_spot_cvd = []
         for t in candle_closed_ts[:12][::-1]:
             closed_spot_cvd.append(spot_map.get(t, 0.0))
             
+        live_spot_ts = int(candles_300[0][0]) if candles_300 else 0
+        live_spot_delta = spot_map.get(live_spot_ts, 0.0)
         spot_cvd_series_13 = closed_spot_cvd + [live_spot_delta]
 
-        # 4. OPEN INTEREST
-        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
+        # --- 3. OPEN INTEREST ---
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=15&t={ts}", timeout=5).json().get("data", [])
         oi_map = {int(row[0]): float(row[1]) for row in oi_res}
         
-        oi_series_13 = []
         for i in range(12, -1, -1):
             t_curr = candle_closed_ts[i] if i < len(candle_closed_ts) else 0
             t_prev = candle_closed_ts[i+1] if i+1 < len(candle_closed_ts) else t_curr - 300000
@@ -330,7 +331,6 @@ def fetch_okx_data():
 
         radar_data = get_market_radar(btc_price, ts)
         
-        # UI Výpočty (Zahrnuje i ten živý 13. bod pro okamžitou reakci!)
         cvd_1 = sum(cvd_series_13[-1:])
         cvd_5 = sum(cvd_series_13[-5:])
         cvd_9 = sum(cvd_series_13[-9:])
@@ -349,11 +349,9 @@ def fetch_okx_data():
 
 def scan_setup_1(candles_300, cvd_series_13):
     try:
-        # Skenujeme pouze 12 UZAVŘENÝCH svíček (abychom předešli falešným signálům z živé svíčky)
         if len(candles_300) < 13 or len(cvd_series_13) < 13: return "Načítám data...", False
         candles_12 = candles_300[1:13][::-1]
         cvd_12 = cvd_series_13[:12]
-        
         best_w = None
         for length in range(3, 13):
             sub_c = candles_12[-length:]
@@ -537,7 +535,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# NOVÁ SEKCE: VIZUÁLNÍ DETEKCE ABSORPCE S AUTO-ŠKÁLOVÁNÍM
+# NOVÁ SEKCE: VIZUÁLNÍ DETEKCE ABSORPCE (ZAMČENÝ, STABILNÍ GRAF, VÝŠKA 450px)
 st.markdown("""
 <div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
     <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE (1H)</div>
@@ -557,7 +555,7 @@ if len(c_300) >= 13 and len(cvd_13) == 13 and len(scvd_13) == 13:
         cum_cvd_chart.append(curr_c)
         cum_scvd_chart.append(curr_s)
         
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.5, 0.25, 0.25])
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.33, 0.33, 0.33])
     
     # 1. Price (Svíčky)
     fig.add_trace(go.Candlestick(x=x_axis,
@@ -569,26 +567,36 @@ if len(c_300) >= 13 and len(cvd_13) == 13 and len(scvd_13) == 13:
                                  increasing_fillcolor='#3fb950', decreasing_fillcolor='#f85149',
                                  showlegend=False), row=1, col=1)
                                  
-    # 2. Futures CVD (Nezávislá, vysoce citlivá osa)
+    # 2. Futures CVD (Modrá křivka)
     fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode='lines', 
                              line=dict(color='#00f3ff', width=3, shape='spline', smoothing=1.1), showlegend=False), row=2, col=1)
                              
-    # 3. Spot CVD (Nezávislá, vysoce citlivá osa)
+    # 3. Spot CVD (Žlutá křivka)
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
+    # Vlastní výpočet rozsahů pro dokonalé zamčení a 15% odsazení
+    def get_smart_range(arr):
+        mn, mx = min(arr), max(arr)
+        pd_val = (mx - mn) * 0.15
+        if pd_val == 0: pd_val = 10
+        return [mn - pd_val, mx + pd_val]
+
+    p_rng = get_smart_range([float(c[3]) for c in c_13] + [float(c[2]) for c in c_13])
+    c_rng = get_smart_range(cum_cvd_chart)
+    s_rng = get_smart_range(cum_scvd_chart)
+
     fig.update_layout(
-        height=280,
+        height=450, # Zvětšeno z 280 na 450 pro gigantické zobrazení CVD a Spotu
         margin=dict(l=0, r=0, t=25, b=0, pad=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False)),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        # ZDE JE KOUZLO AUTO-ŠKÁLOVÁNÍ PRO MAXIMÁLNÍ CITLIVOST:
-        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, autorange=True, fixedrange=False),
-        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, autorange=True, fixedrange=False)
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=p_rng),
+        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
+        yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=c_rng),
+        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
+        yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=s_rng)
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
