@@ -231,7 +231,6 @@ def get_market_radar(btc_price, ts):
     bid_v1, bid_v2, bid_v3 = 0.0, 0.0, 0.0
     
     try:
-        # Prioritně bereme books-full (až 5000 úrovní), aby 3. pásmo nikdy nevyschlo
         endpoints = [
             ("https://eea.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
             ("https://www.okx.com/api/v5/market/books-full?instId=BTC-USD_UM_XPERP-310404&sz=5000", "BTC-USD_UM_XPERP-310404"),
@@ -258,7 +257,6 @@ def get_market_radar(btc_price, ts):
         
         sum_bids, sum_asks = 0.0, 0.0
         
-        # 3 čistá pásma po 100 USD (0-100, 100-200, 200-300) + celkový součet do 400 USD
         for a in asks:
             p, v = float(a[0]), float(a[1])
             dist = p - btc_price
@@ -293,31 +291,32 @@ def fetch_okx_data():
         btc_price = float(candles_300[0][4]) if candles_300 else 76000.0
         candles_1h = get_okx_candles("1H", 72, ts)
 
-        # Mapa uzavřených cen podle timestampu svíčky (odstranění falešného přepočtu živou cenou)
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # 1. FUTURES CVD (5m uzavřené svíčky, unit=1 je přímo v BTC)
+        # 1. FUTURES CVD (OPRAVENO: Převod obřích USD částek na čisté BTC)
         vol_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&unit=1&t={ts}"
         vol_res = requests.get(vol_url, timeout=5).json().get("data", [])
         if len(vol_res) >= 12:
             for row in vol_res[:12][::-1]:
-                cvd_series_12.append(float(row[2]) - float(row[1]))
+                delta_raw = float(row[2]) - float(row[1])
+                # Pokud je delta enormní (>50,000), je to v USD, proto dělíme cenou BTC
+                cvd_btc = (delta_raw / btc_price) if abs(delta_raw) > 50000 else delta_raw
+                cvd_series_12.append(cvd_btc)
 
-        # 2. SPOT CVD (5m uzavřené svíčky, unit=1 je přímo v BTC)
+        # 2. SPOT CVD (Spot rovnou vrací BTC)
         spot_url = f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&unit=1&t={ts}"
         spot_res = requests.get(spot_url, timeout=5).json().get("data", [])
         if len(spot_res) >= 12:
             for row in spot_res[:12][::-1]:
                 spot_cvd_series_12.append(float(row[2]) - float(row[1]))
 
-        # 3. OPEN INTEREST (5m uzavřené svíčky spárované s uzavřenou cenou dané svíčky)
+        # 3. OPEN INTEREST
         oi_url = f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=13&t={ts}"
         oi_res = requests.get(oi_url, timeout=5).json().get("data", [])
         if len(oi_res) >= 13 and len(candles_300) >= 14:
             for i in range(12, 0, -1):
                 ts_curr = int(oi_res[i-1][0])
                 ts_prev = int(oi_res[i][0])
-                # Použijeme přesnou uzavírací cenu svíčky se stejným timestampem (ne živou cenu!)
                 p_curr = candle_close_map.get(ts_curr, float(candles_300[i][4]))
                 p_prev = candle_close_map.get(ts_prev, float(candles_300[i+1][4]))
                 oi_series_12.append((float(oi_res[i-1][1]) / p_curr) - (float(oi_res[i][1]) / p_prev))
