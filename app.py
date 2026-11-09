@@ -168,7 +168,6 @@ def get_prague_now():
         return datetime.now(timezone(timedelta(hours=1)))
 
 def check_liquid_hours():
-    """Podmínka č. 1: Pondělí-Pátek a likvidní časy (02:00-05:00, 09:00-10:30, 14:00-19:00)."""
     now_p = get_prague_now()
     if now_p.weekday() >= 5:
         return False, f"⏸️ VÍKENDOVÝ REŽIM ({now_p.strftime('%H:%M')}) – Alarmy vypnuty"
@@ -301,15 +300,13 @@ def get_market_radar(btc_price, ts):
     return st.session_state.get("last_valid_radar", current_radar)
 
 def compute_1m_bridge_delta(candles_1m, candle_open_ts, is_spot=False):
-    """Spočítá realistický 1M most pro právě uzavřenou 5M svíčku [candle_open_ts, candle_open_ts + 300000]."""
     total_delta = 0.0
     for m in candles_1m:
         try:
             m_ts = int(m[0])
             if candle_open_ts <= m_ts < candle_open_ts + 300000:
                 o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
-                if h <= l:
-                    continue
+                if h <= l: continue
                 vol_btc = float(m[5]) if is_spot else float(m[6])
                 body_pressure = (cl - o) / (h - l)
                 wick_pressure = (2.0 * cl - h - l) / (h - l)
@@ -327,37 +324,28 @@ def fetch_okx_data():
         btc_price = get_live_xperp_price(fallback_p, ts)
         candles_1h = get_okx_candles("1H", 72, ts, ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP"])
         
-        # 12 uzavřených 5M svíček (c[0] je OPEN time svíčky)
         c_12_desc = candles_300[1:13] if len(candles_300) >= 13 else candles_300[:12]
         c_12_asc = c_12_desc[::-1]
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # 1. OFICIÁLNÍ FUTURES CVD MAPA (limit=100 pro celodenní paměť Setupu 2)
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
             try:
                 open_ts = int(row[0])
-                sell_usd = float(row[1])
-                buy_usd = float(row[2])
+                sell_usd, buy_usd = float(row[1]), float(row[2])
                 ref_p = candle_close_map.get(open_ts, btc_price)
                 fut_map[open_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
-            except Exception:
-                continue
+            except: continue
 
-        # 2. OFICIÁLNÍ SPOT CVD MAPA (limit=100)
         spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
             try:
                 open_ts = int(row[0])
-                sell_btc = float(row[1])
-                buy_btc = float(row[2])
-                spot_map[open_ts] = buy_btc - sell_btc
-            except Exception:
-                continue
+                spot_map[open_ts] = float(row[2]) - float(row[1])
+            except: continue
 
-        # 3. KONTROLA CHYBĚJÍCÍCH DAT V RUBIKU (1M most pro čerstvě uzavřené svíčky)
         missing_fut = any(int(c[0]) not in fut_map for c in c_12_asc[-2:])
         missing_spot = any(int(c[0]) not in spot_map for c in c_12_asc[-2:])
         
@@ -367,22 +355,18 @@ def fetch_okx_data():
         cvd_12, scvd_12 = [], []
         for c in c_12_asc:
             open_ts = int(c[0])
-
-            if open_ts in fut_map:
-                cvd_12.append(fut_map[open_ts])
+            if open_ts in fut_map: cvd_12.append(fut_map[open_ts])
             else:
-                val_f = compute_1m_bridge_delta(candles_1m_fut, open_ts, is_spot=False)
+                val_f = compute_1m_bridge_delta(candles_1m_fut, open_ts, False)
                 fut_map[open_ts] = val_f
                 cvd_12.append(val_f)
 
-            if open_ts in spot_map:
-                scvd_12.append(spot_map[open_ts])
+            if open_ts in spot_map: scvd_12.append(spot_map[open_ts])
             else:
-                val_s = compute_1m_bridge_delta(candles_1m_spot, open_ts, is_spot=True)
+                val_s = compute_1m_bridge_delta(candles_1m_spot, open_ts, True)
                 spot_map[open_ts] = val_s
                 scvd_12.append(val_s)
 
-        # 4. OPEN INTEREST (limit=100 pro přesné sledování -50 BTC výplachu na levelech)
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         oi_change_map = {}
         if len(oi_res) >= 2:
@@ -394,8 +378,7 @@ def fetch_okx_data():
                     p_prev = candle_close_map.get(ts_prev, btc_price)
                     if p_curr > 0 and p_prev > 0 and val_curr > 0 and val_prev > 0:
                         oi_change_map[ts_curr] = (val_curr / p_curr) - (val_prev / p_prev)
-                except Exception:
-                    continue
+                except: continue
 
         oi_12 = []
         if len(oi_res) >= 13:
@@ -426,13 +409,6 @@ def fetch_okx_data():
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
 def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
-    """
-    SETUP 1: 4 varianty absorpce na posledních 12 x 5M svíčkách (1H):
-    - Varianta 1: Dva knoty (Highs/Lows) do 50 USD (equal flat) + trendující křivka CVD nebo SPOT za cenu.
-    - Varianta 2: Dva knoty (Highs/Lows) do 50 USD + CVD nebo SPOT follow price, ale na 2. knotu udělá HH (u topů) nebo LL (u den).
-    - Varianta 3: Úzká range bez jasných swingů + trendující CVD nebo SPOT.
-    - Varianta 4: Cena sideways / lehké HH-LL (do 50 USD), SPOT jde s cenou, ale CVD jde opačným směrem.
-    """
     try:
         if len(c_12_asc) < 12 or len(cvd_12) < 12 or len(scvd_12) < 12:
             return "Načítám 1H strukturu svíček...", False
@@ -450,58 +426,54 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             cum_s.append(cs)
 
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
+        
+        # HLEDÁNÍ KNOTŮ (M / W) KDEKOLIV V GRAFU
+        for j in range(11, 1, -1):
+            for i in range(j - 2, -1, -1):
+                
+                # --- BEARISH M-PATTERN (Equal Highs) ---
+                wick_diff_h = abs(highs[j] - highs[i])
+                if wick_diff_h <= 50.0:
+                    max_between_h = max(highs[i + 1:j])
+                    min_pullback_h = min(lows[i + 1:j])
+                    # Není tam vyšší high (s rezervou 15$) + čistý pullback aspoň 40$
+                    if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
+                        c_higher = cum_c[j] > cum_c[i] + 15.0
+                        s_higher = cum_s[j] > cum_s[i] + 3.0
+                        if c_higher or s_higher:
+                            span = j - i
+                            pos_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] > 0)
+                            pos_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] > 0)
+                            is_trending = (c_higher and pos_steps_c >= span * 0.65) or (s_higher and pos_steps_s >= span * 0.65)
+                            src_name = "CVD+SPOT" if (c_higher and s_higher) else ("CVD" if c_higher else "SPOT")
+                            if is_trending:
+                                msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 1 – Equal Highs Δ {wick_diff_h:.0f}$): Trendující {src_name} nad cenu!"
+                            else:
+                                msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 2 – Equal Highs Δ {wick_diff_h:.0f}$): {src_name} udělalo HH na 2. vrcholu!"
+                            return msg, bool(liquid_ok)
 
-        # --- KONTROLA VARIANTY 1 A VARIANTY 2: EQUAL HIGHS / EQUAL LOWS (KNOT DO KNOTU <= 50 USD) ---
-        # Hledáme 1. výrazný knot v první části grafu (indexy 0..8) a 2. knot na pravém okraji (indexy 9..11)
-        j_high = max(range(9, 12), key=lambda x: highs[x])
-        i_high = max(range(0, j_high - 1), key=lambda x: highs[x])
+                # --- BULLISH W-PATTERN (Equal Lows) ---
+                wick_diff_l = abs(lows[j] - lows[i])
+                if wick_diff_l <= 50.0:
+                    min_between_l = min(lows[i + 1:j])
+                    max_bounce_l = max(highs[i + 1:j])
+                    # Není tam nižší low (s rezervou 15$) + čistý odraz aspoň 40$
+                    if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
+                        c_lower = cum_c[j] < cum_c[i] - 15.0
+                        s_lower = cum_s[j] < cum_s[i] - 3.0
+                        if c_lower or s_lower:
+                            span = j - i
+                            neg_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] < 0)
+                            neg_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] < 0)
+                            is_trending = (c_lower and neg_steps_c >= span * 0.65) or (s_lower and neg_steps_s >= span * 0.65)
+                            src_name = "CVD+SPOT" if (c_lower and s_lower) else ("CVD" if c_lower else "SPOT")
+                            if is_trending:
+                                msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 1 – Equal Lows Δ {wick_diff_l:.0f}$): Klesající {src_name} pod cenu!"
+                            else:
+                                msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 2 – Equal Lows Δ {wick_diff_l:.0f}$): {src_name} udělalo LL na 2. dně!"
+                            return msg, bool(liquid_ok)
 
-        if j_high >= i_high + 2:
-            wick_diff_h = abs(highs[j_high] - highs[i_high])
-            max_between_h = max(highs[i_high + 1:j_high]) if (j_high - i_high) > 1 else highs[i_high]
-            min_pullback_h = min(lows[i_high + 1:j_high + 1])
-
-            # Dva vrcholové knoty v rovině do 50 USD, nepřekonané mezitím
-            if wick_diff_h <= 50.0 and max_between_h <= max(highs[i_high], highs[j_high]) + 15.0 and (max(highs[i_high], highs[j_high]) - min_pullback_h) >= 20.0:
-                c_higher = cum_c[j_high] > cum_c[i_high] + 15.0
-                s_higher = cum_s[j_high] > cum_s[i_high] + 3.0
-                if c_higher or s_higher:
-                    span = j_high - i_high
-                    pos_steps_c = sum(1 for k in range(i_high + 1, j_high + 1) if cvd_12[k] > 0)
-                    pos_steps_s = sum(1 for k in range(i_high + 1, j_high + 1) if scvd_12[k] > 0)
-                    is_trending = (c_higher and pos_steps_c >= span * 0.65) or (s_higher and pos_steps_s >= span * 0.65)
-                    src_name = "CVD+SPOT" if (c_higher and s_higher) else ("CVD" if c_higher else "SPOT")
-                    if is_trending:
-                        msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 1 – Equal Highs Δ {wick_diff_h:.0f}$): Trendující {src_name} nad cenu!"
-                    else:
-                        msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 2 – Equal Highs Δ {wick_diff_h:.0f}$): {src_name} udělalo HH na 2. vrcholu!"
-                    return msg, bool(liquid_ok)
-
-        j_low = min(range(9, 12), key=lambda x: lows[x])
-        i_low = min(range(0, j_low - 1), key=lambda x: lows[x])
-
-        if j_low >= i_low + 2:
-            wick_diff_l = abs(lows[j_low] - lows[i_low])
-            min_between_l = min(lows[i_low + 1:j_low]) if (j_low - i_low) > 1 else lows[i_low]
-            max_bounce_l = max(highs[i_low + 1:j_low + 1])
-
-            # Dva spodní knoty v rovině do 50 USD, neprolomené mezitím
-            if wick_diff_l <= 50.0 and min_between_l >= min(lows[i_low], lows[j_low]) - 15.0 and (max_bounce_l - min(lows[i_low], lows[j_low])) >= 20.0:
-                c_lower = cum_c[j_low] < cum_c[i_low] - 15.0
-                s_lower = cum_s[j_low] < cum_s[i_low] - 3.0
-                if c_lower or s_lower:
-                    span = j_low - i_low
-                    neg_steps_c = sum(1 for k in range(i_low + 1, j_low + 1) if cvd_12[k] < 0)
-                    neg_steps_s = sum(1 for k in range(i_low + 1, j_low + 1) if scvd_12[k] < 0)
-                    is_trending = (c_lower and neg_steps_c >= span * 0.65) or (s_lower and neg_steps_s >= span * 0.65)
-                    src_name = "CVD+SPOT" if (c_lower and s_lower) else ("CVD" if c_lower else "SPOT")
-                    if is_trending:
-                        msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 1 – Equal Lows Δ {wick_diff_l:.0f}$): Klesající {src_name} pod cenu!"
-                    else:
-                        msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 2 – Equal Lows Δ {wick_diff_l:.0f}$): {src_name} udělalo LL na 2. dně!"
-                    return msg, bool(liquid_ok)
-
-        # --- KONTROLA VARIANTY 4: ANOMÁLIE CVD OPACNĚ NEŽ SPOT (CENA DO 50 USD / LEHKÉ HH-LL) ---
+        # --- VARIANTY 4 (Anomálie) ---
         for win in [6, 8, 12]:
             p_Move = closes[-1] - closes[-win]
             w_Range = max(highs[-win:]) - min(lows[-win:])
@@ -509,16 +481,12 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             s_Move = sum(scvd_12[-win:])
 
             if abs(p_Move) <= 50.0 or w_Range <= 140.0:
-                # Bearish Varianta 4: Spot klesá s cenou, ale Futures CVD agresivně roste
                 if p_Move <= 25.0 and s_Move <= -4.0 and c_Move >= 35.0:
-                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD +{c_Move:.1f} BTC proti Spotu ({s_Move:+.1f})!"
-                    return msg, bool(liquid_ok)
-                # Bullish Varianta 4: Spot roste s cenou, ale Futures CVD agresivně padá
+                    return f"{prefix}🔥 BEARISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD +{c_Move:.1f} BTC proti Spotu ({s_Move:+.1f})!", bool(liquid_ok)
                 if p_Move >= -25.0 and s_Move >= 4.0 and c_Move <= -35.0:
-                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!"
-                    return msg, bool(liquid_ok)
+                    return f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!", bool(liquid_ok)
 
-        # --- KONTROLA VARIANTY 3: ÚZKÁ RANGE + TRENDUJÍCÍ CVD NEBO SPOT ---
+        # --- VARIANTY 3 (Rozšířený Zámek) ---
         for win in range(5, 13):
             sub_h = highs[-win:]
             sub_l = lows[-win:]
@@ -526,7 +494,8 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             close_spread = max(sub_c) - min(sub_c)
             wick_spread = max(sub_h) - min(sub_l)
 
-            if close_spread <= 50.0 or wick_spread <= 110.0:
+            # Rozšířená tolerance pro kompresi
+            if close_spread <= 75.0 or wick_spread <= 160.0:
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
                 c_pos = sum(1 for x in cvd_12[-win:] if x > 0)
@@ -535,46 +504,33 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 s_neg = sum(1 for x in scvd_12[-win:] if x < 0)
 
                 if (c_sum >= 50.0 and c_pos >= win * 0.7) or (s_sum >= 12.0 and s_pos >= win * 0.7):
-                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Range {close_spread:.0f}$): Trendující nákupní delta pohlcena!"
-                    return msg, bool(liquid_ok)
+                    return f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující nákupní delta pohlcena!", bool(liquid_ok)
                 if (c_sum <= -50.0 and c_neg >= win * 0.7) or (s_sum <= -12.0 and s_neg >= win * 0.7):
-                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Range {close_spread:.0f}$): Trendující prodejní delta pohlcena!"
-                    return msg, bool(liquid_ok)
+                    return f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!", bool(liquid_ok)
 
-        return f"Skenuji 1H absorpci (Equal knoty ≤ 50$ = min Δ {min(abs(highs[j_high]-highs[i_high]), abs(lows[j_low]-lows[i_low])):.0f}$).", False
+        return f"Skenuji absorpci (M/W knoty ≤ 50$, Pullback min 40$ | Zámek ≤ 75$)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
-    """
-    SETUP 2: Macro SFP na 6 levelech (PDH, PDL, ASIA H/L, LON H/L)
-    1. Průraz (Sweep) levelu + pokles OI o >= 50 BTC v prorážející a následující 5M svíčce.
-    2. Pokus o retest (nebo retest), při kterém je hodnota CVD výrazně vyšší (u Highs) nebo nižší (u Lows) než při původním sweepu.
-    """
     try:
         if len(candles_300) < 20 or len(candles_1h) < 10:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
-        try:
-            tz_p = ZoneInfo("Europe/Prague")
-        except Exception:
-            tz_p = timezone(timedelta(hours=1))
+        try: tz_p = ZoneInfo("Europe/Prague")
+        except: tz_p = timezone(timedelta(hours=1))
 
         now_prague = datetime.now(tz_p)
         current_date = now_prague.date()
         yesterday_date = current_date - timedelta(days=1)
 
-        # 1. Výpočet PDH / PDL ze včerejška
         pdh, pdl = 0.0, float('inf')
         for c in candles_1h:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_p)
             if dt.date() == yesterday_date:
-                pdh = max(pdh, float(c[2]))
-                pdl = min(pdl, float(c[3]))
-        if pdh == 0.0:
-            pdh, pdl = 0.0, 0.0
+                pdh, pdl = max(pdh, float(c[2])), min(pdl, float(c[3]))
+        if pdh == 0.0: pdh, pdl = 0.0, 0.0
 
-        # Chronologicky seřazené uzavřené 5M svíčky dnešního dne
         closed_5m_asc = candles_300[1:][::-1]
         today_candles = []
         asia_h, asia_l = 0.0, float('inf')
@@ -583,110 +539,70 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
         for c in closed_5m_asc:
             ts_c = int(c[0])
             dt = datetime.fromtimestamp(ts_c / 1000, tz_p)
-            if dt.date() != current_date:
-                continue
+            if dt.date() != current_date: continue
             today_candles.append((ts_c, float(c[1]), float(c[2]), float(c[3]), float(c[4]), dt.hour))
-            if 1 <= dt.hour < 7:
-                asia_h = max(asia_h, float(c[2]))
-                asia_l = min(asia_l, float(c[3]))
-            elif 9 <= dt.hour < 14:
-                lon_h = max(lon_h, float(c[2]))
-                lon_l = min(lon_l, float(c[3]))
+            if 1 <= dt.hour < 7: asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
+            elif 9 <= dt.hour < 14: lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
 
-        if asia_h == 0.0:
-            asia_h, asia_l = 0.0, 0.0
-        if lon_h == 0.0:
-            lon_h, lon_l = 0.0, 0.0
+        if asia_h == 0.0: asia_h, asia_l = 0.0, 0.0
+        if lon_h == 0.0: lon_h, lon_l = 0.0, 0.0
 
-        raw_levels = [
-            ("PDH", pdh, True, 0),
-            ("PDL", pdl, False, 0),
-            ("ASIA H", asia_h, True, 7),
-            ("ASIA L", asia_l, False, 7),
-            ("LON H", lon_h, True, 14),
-            ("LON L", lon_l, False, 14),
-        ]
-
-        # Kumulativní CVD pro dnešní 5M svíčky
+        raw_levels = [("PDH", pdh, True, 0), ("PDL", pdl, False, 0), ("ASIA H", asia_h, True, 7), ("ASIA L", asia_l, False, 7), ("LON H", lon_h, True, 14), ("LON L", lon_l, False, 14)]
         cum_cvd_today = []
         running_cvd = 0.0
         for tc in today_candles:
             running_cvd += fut_map.get(tc[0], 0.0)
             cum_cvd_today.append(running_cvd)
 
-        untouched_levels = []
-        pending_retest_msgs = []
-        triggered_msg = None
-        is_triggered = False
+        untouched_levels, pending_retest_msgs = [], []
+        triggered_msg, is_triggered = None, False
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
-
         n_today = len(today_candles)
 
         for name, val, is_high, valid_from_hour in raw_levels:
-            if val <= 0 or now_prague.hour < valid_from_hour:
-                continue
+            if val <= 0 or now_prague.hour < valid_from_hour: continue
 
-            # Najdeme první svíčku, která dnes po valid_from_hour level vybrala (Sweep)
             sweep_idx = None
             for idx, tc in enumerate(today_candles):
-                if tc[5] < valid_from_hour:
-                    continue
-                if is_high and tc[2] >= val:
-                    sweep_idx = idx
-                    break
-                if not is_high and tc[3] <= val:
-                    sweep_idx = idx
-                    break
+                if tc[5] < valid_from_hour: continue
+                if is_high and tc[2] >= val: sweep_idx = idx; break
+                if not is_high and tc[3] <= val: sweep_idx = idx; break
 
             if sweep_idx is None:
                 untouched_levels.append(f"{name}: {val:.0f}")
                 continue
 
-            # Kontrola poklesu OI o >= 50 BTC v prorážející a následující 5M svíčce
             ts_sweep = today_candles[sweep_idx][0]
-            oi_s1 = oi_change_map.get(ts_sweep, 0.0)
-            oi_s2 = oi_change_map.get(ts_sweep + 300000, 0.0)
-            oi_flush = min(oi_s1, oi_s1 + oi_s2)
+            oi_flush = min(oi_change_map.get(ts_sweep, 0.0), oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0))
 
-            if oi_flush > -50.0:
-                # Level byl vybrán bez 50 BTC OI výplachu
-                continue
+            if oi_flush > -50.0: continue
 
-            # Fáze 1 splněna (Sweep + pokles OI >= 50 BTC). Hledáme pokus o retest s extrémním CVD:
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            # Kontrolujeme, zda na posledních 3 uzavřených svíčkách probíhá pokus o retest s vyšším/nižším CVD
             for r_idx in range(max(sweep_idx + 1, n_today - 3), n_today):
                 cvd_at_retest = cum_cvd_today[r_idx]
-                c_open, c_high, c_low, c_close = today_candles[r_idx][1], today_candles[r_idx][2], today_candles[r_idx][3], today_candles[r_idx][4]
+                c_open, c_close = today_candles[r_idx][1], today_candles[r_idx][4]
 
                 if is_high:
-                    # Pokus o retest vrcholu + výrazně vyšší CVD než při sweepu (+25 BTC a více)
                     if (cvd_at_retest - cvd_at_sweep) >= 25.0 and (c_close > c_open or r_idx == n_today - 1):
                         triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s vyšším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
                         is_triggered = bool(liquid_ok)
-                        retest_hit = True
-                        break
+                        retest_hit = True; break
                 else:
-                    # Pokus o retest dna + výrazně nižší CVD než při sweepu (-25 BTC a méně)
                     if (cvd_at_retest - cvd_at_sweep) <= -25.0 and (c_close < c_open or r_idx == n_today - 1):
                         triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s nižším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
                         is_triggered = bool(liquid_ok)
-                        retest_hit = True
-                        break
+                        retest_hit = True; break
 
             if not retest_hit:
                 curr_diff = cum_cvd_today[-1] - cvd_at_sweep if n_today > 0 else 0.0
-                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f} BTC) – čekám na retest s CVD (nyní {curr_diff:+.1f} BTC)")
+                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f}) – čekám na retest (Δ {curr_diff:+.1f})")
 
         levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
-        if triggered_msg:
-            final_msg = triggered_msg
-        elif pending_retest_msgs:
-            final_msg = " | ".join(pending_retest_msgs)
-        else:
-            final_msg = "Čekám na protnutí Macro Levelu s výplachem OI (-50 BTC)..."
+        if triggered_msg: final_msg = triggered_msg
+        elif pending_retest_msgs: final_msg = " | ".join(pending_retest_msgs)
+        else: final_msg = "Čekám na protnutí Macro Levelu s výplachem OI (-50 BTC)..."
 
         return final_msg, is_triggered, levels_str
     except Exception:
@@ -781,7 +697,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.34, 0.33, 0.33])
     
-    # 1. Price (Svíčky z BTC-USD_UM_XPERP-310404)
+    # 1. Price
     fig.add_trace(go.Candlestick(x=x_axis,
                                  open=[float(c[1]) for c in c_12_asc],
                                  high=[float(c[2]) for c in c_12_asc],
@@ -791,11 +707,11 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
                                  increasing_fillcolor='#3fb950', decreasing_fillcolor='#f85149',
                                  showlegend=False), row=1, col=1)
                                  
-    # 2. Futures CVD (Modrá křivka)
+    # 2. Futures CVD 
     fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode='lines', 
                              line=dict(color='#00f3ff', width=3, shape='spline', smoothing=1.1), showlegend=False), row=2, col=1)
                              
-    # 3. Spot CVD (Žlutá křivka)
+    # 3. Spot CVD 
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
@@ -824,7 +740,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-# SETUP KARTY (S indikátorem likvidního okna)
+# SETUP KARTY 
 liq_color = "#3fb950" if liquid_ok else "#94a3b8"
 st.markdown(f"""
 <div class="setups-container">
