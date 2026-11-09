@@ -200,7 +200,8 @@ def get_okx_candles(bar, limit, ts, inst_priority=None):
     if inst_priority is None:
         inst_priority = ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP", "BTC-USD-SWAP"]
     for inst in inst_priority:
-        for host in ["https://eea.okx.com", "https://www.okx.com"]:
+        hosts = ["https://www.okx.com", "https://eea.okx.com"] if "USDT" in inst else ["https://eea.okx.com", "https://www.okx.com"]
+        for host in hosts:
             try:
                 u = f"{host}/api/v5/market/candles?instId={inst}&bar={bar}&limit={limit}&t={ts}"
                 data = requests.get(u, timeout=4).json().get("data", [])
@@ -277,17 +278,16 @@ def get_market_radar(btc_price, ts):
         return current_radar
     return st.session_state.get("last_valid_radar", current_radar)
 
-def compute_1m_bridge_delta(candles_1m, target_5m_ts, is_spot=False):
-    """Spočítá dočasný 1M most pro právě uzavřenou 5M svíčku, dokud OKX Rubik nevydá oficiální číslo."""
+def compute_1m_bridge_delta(candles_1m, candle_open_ts, is_spot=False):
+    """Spočítá 1M most pro právě uzavřenou 5M svíčku [candle_open_ts, candle_open_ts + 300000]."""
     total_delta = 0.0
     for m in candles_1m:
         try:
             m_ts = int(m[0])
-            if target_5m_ts <= m_ts < target_5m_ts + 300000:
+            if candle_open_ts <= m_ts < candle_open_ts + 300000:
                 o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
                 if h <= l:
                     continue
-                # U BTC-USDT (Spot) je m[5] přímo v BTC; u BTC-USDT-SWAP je m[6] (volCcy) přímo v BTC
                 vol_btc = float(m[5]) if is_spot else float(m[6])
                 body_ratio = (cl - o) / (h - l)
                 total_delta += vol_btc * body_ratio * 0.65
@@ -303,67 +303,70 @@ def fetch_okx_data():
         btc_price = get_live_xperp_price(fallback_p, ts)
         candles_1h = get_okx_candles("1H", 72, ts, ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP"])
         
-        # 12 uzavřených 5M svíček (index 0 je právě běžící neuzavřená svíčka, 1..12 jsou uzavřené)
+        # 12 uzavřených 5M svíček (c[0] je OPEN time svíčky)
         c_12_desc = candles_300[1:13] if len(candles_300) >= 13 else candles_300[:12]
         c_12_asc = c_12_desc[::-1]
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # 1. OFICIÁLNÍ FUTURES CVD MAPA (OKX Rubik vrací CONTRACTS vždy v USD -> dělíme cenou svíčky)
+        # 1. OFICIÁLNÍ FUTURES CVD MAPA
+        # POZOR: Rubik značí interval [t, t + 300000] koncovým časem end_ts = t + 300000!
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=30&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
             try:
-                row_ts = int(row[0])
+                end_ts = int(row[0])
                 sell_usd = float(row[1])
                 buy_usd = float(row[2])
-                ref_p = candle_close_map.get(row_ts, btc_price)
-                fut_map[row_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
+                ref_p = candle_close_map.get(end_ts - 300000, btc_price)
+                fut_map[end_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
             except Exception:
                 continue
 
-        # 2. OFICIÁLNÍ SPOT CVD MAPA (OKX Rubik vrací SPOT vždy rovnou v BTC -> nikdy nedělíme cenou)
+        # 2. OFICIÁLNÍ SPOT CVD MAPA (také značeno koncovým časem end_ts = t + 300000)
         spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=30&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
             try:
-                row_ts = int(row[0])
+                end_ts = int(row[0])
                 sell_btc = float(row[1])
                 buy_btc = float(row[2])
-                spot_map[row_ts] = buy_btc - sell_btc
+                spot_map[end_ts] = buy_btc - sell_btc
             except Exception:
                 continue
 
-        # 3. 1M SVÍČKY PRO PŘEMOSTĚNÍ POSLEDNÍCH UZAVŘENÝCH 5M SVÍČEK (pokud má Rubik 1-4 min zpoždění)
-        missing_fut = any(int(c[0]) not in fut_map for c in c_12_asc[-2:])
-        missing_spot = any(int(c[0]) not in spot_map for c in c_12_asc[-2:])
+        # 3. KONTROLA CHYBĚJÍCÍCH DAT V RUBIKU (Hledáme end_ts = int(c[0]) + 300000)
+        missing_fut = any((int(c[0]) + 300000) not in fut_map for c in c_12_asc[-2:])
+        missing_spot = any((int(c[0]) + 300000) not in spot_map for c in c_12_asc[-2:])
         
         candles_1m_fut = get_okx_candles("1m", 25, ts, ["BTC-USDT-SWAP"]) if missing_fut else []
         candles_1m_spot = get_okx_candles("1m", 25, ts, ["BTC-USDT"]) if missing_spot else []
 
         cvd_12, scvd_12 = [], []
         for c in c_12_asc:
-            t = int(c[0])
-            # Futures CVD: pokud už je v Rubiku, bereme 100% Rubik; jinak 1M most
-            if t in fut_map:
-                cvd_12.append(fut_map[t])
-            else:
-                cvd_12.append(compute_1m_bridge_delta(candles_1m_fut, t, is_spot=False))
+            open_ts = int(c[0])
+            end_ts = open_ts + 300000  # Klíč v OKX Rubiku pro svíčku [open_ts, end_ts]
 
-            # Spot CVD: pokud už je v Rubiku, bereme 100% Rubik; jinak 1M most
-            if t in spot_map:
-                scvd_12.append(spot_map[t])
+            # Futures CVD: pokud už Rubik vydal end_ts, bereme Rubik; jinak okamžitě 1M most
+            if end_ts in fut_map:
+                cvd_12.append(fut_map[end_ts])
             else:
-                scvd_12.append(compute_1m_bridge_delta(candles_1m_spot, t, is_spot=True))
+                cvd_12.append(compute_1m_bridge_delta(candles_1m_fut, open_ts, is_spot=False))
 
-        # 4. OPEN INTEREST (Vždy počítáno ze sousedních existujících záznamů -> nemožné odečíst od nuly)
+            # Spot CVD: pokud už Rubik vydal end_ts, bereme Rubik; jinak okamžitě 1M most
+            if end_ts in spot_map:
+                scvd_12.append(spot_map[end_ts])
+            else:
+                scvd_12.append(compute_1m_bridge_delta(candles_1m_spot, open_ts, is_spot=True))
+
+        # 4. OPEN INTEREST
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=25&t={ts}", timeout=5).json().get("data", [])
         oi_12 = []
         if len(oi_res) >= 13:
             for i in range(12, 0, -1):
                 ts_curr, val_curr = int(oi_res[i-1][0]), float(oi_res[i-1][1])
                 ts_prev, val_prev = int(oi_res[i][0]), float(oi_res[i][1])
-                p_curr = candle_close_map.get(ts_curr, btc_price)
-                p_prev = candle_close_map.get(ts_prev, btc_price)
+                p_curr = candle_close_map.get(ts_curr - 300000, btc_price)
+                p_prev = candle_close_map.get(ts_prev - 300000, btc_price)
                 if p_curr > 0 and p_prev > 0 and val_curr > 0 and val_prev > 0:
                     oi_12.append((val_curr / p_curr) - (val_prev / p_prev))
                 else:
@@ -560,7 +563,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# VIZUÁLNÍ DETEKCE ABSORPCE (12 uzavřených 5M svíček s okamžitým 1M mostem na konci)
+# VIZUÁLNÍ DETEKCE ABSORPCE (Správně zarovnané klíče end_ts = open_ts + 300000)
 st.markdown("""
 <div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
     <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE (1H)</div>
