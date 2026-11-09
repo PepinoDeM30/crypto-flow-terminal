@@ -279,7 +279,7 @@ def get_market_radar(btc_price, ts):
     return st.session_state.get("last_valid_radar", current_radar)
 
 def compute_1m_bridge_delta(candles_1m, candle_open_ts, is_spot=False):
-    """Spočítá 1M most pro právě uzavřenou 5M svíčku [candle_open_ts, candle_open_ts + 300000]."""
+    """Spočítá 1M most (včetně absorpce v knotech) pro právě uzavřenou 5M svíčku [candle_open_ts, candle_open_ts + 300000]."""
     total_delta = 0.0
     for m in candles_1m:
         try:
@@ -289,8 +289,10 @@ def compute_1m_bridge_delta(candles_1m, candle_open_ts, is_spot=False):
                 if h <= l:
                     continue
                 vol_btc = float(m[5]) if is_spot else float(m[6])
-                body_ratio = (cl - o) / (h - l)
-                total_delta += vol_btc * body_ratio * 0.65
+                body_pressure = (cl - o) / (h - l)
+                wick_pressure = (2.0 * cl - h - l) / (h - l)
+                combined_ratio = 0.55 * body_pressure + 0.45 * wick_pressure
+                total_delta += vol_btc * combined_ratio * 0.65
         except Exception:
             continue
     return total_delta
@@ -309,7 +311,7 @@ def fetch_okx_data():
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
         # 1. OFICIÁLNÍ FUTURES CVD MAPA
-        # POZOR: Rubik značí interval [t, t + 300000] koncovým časem end_ts = t + 300000!
+        # Rubik značí interval [open_ts, end_ts] koncovým časem end_ts = open_ts + 300000
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=30&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
@@ -322,7 +324,7 @@ def fetch_okx_data():
             except Exception:
                 continue
 
-        # 2. OFICIÁLNÍ SPOT CVD MAPA (také značeno koncovým časem end_ts = t + 300000)
+        # 2. OFICIÁLNÍ SPOT CVD MAPA (také značeno koncovým časem end_ts = open_ts + 300000)
         spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=30&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
@@ -346,13 +348,11 @@ def fetch_okx_data():
             open_ts = int(c[0])
             end_ts = open_ts + 300000  # Klíč v OKX Rubiku pro svíčku [open_ts, end_ts]
 
-            # Futures CVD: pokud už Rubik vydal end_ts, bereme Rubik; jinak okamžitě 1M most
             if end_ts in fut_map:
                 cvd_12.append(fut_map[end_ts])
             else:
                 cvd_12.append(compute_1m_bridge_delta(candles_1m_fut, open_ts, is_spot=False))
 
-            # Spot CVD: pokud už Rubik vydal end_ts, bereme Rubik; jinak okamžitě 1M most
             if end_ts in spot_map:
                 scvd_12.append(spot_map[end_ts])
             else:
@@ -563,7 +563,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# VIZUÁLNÍ DETEKCE ABSORPCE (Správně zarovnané klíče end_ts = open_ts + 300000)
+# VIZUÁLNÍ DETEKCE ABSORPCE
 st.markdown("""
 <div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
     <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE (1H)</div>
