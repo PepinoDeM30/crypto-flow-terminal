@@ -328,21 +328,24 @@ def fetch_okx_data():
         c_12_asc = c_12_desc[::-1]
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
+        # --- OPRAVA ČASU PRO FUTURES CVD MAPU ---
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
             try:
-                open_ts = int(row[0])
+                # Rubik hlásí čas konce svíčky, my odečteme 5 min pro spárování s open_ts
+                open_ts = int(row[0]) - 300000 
                 sell_usd, buy_usd = float(row[1]), float(row[2])
                 ref_p = candle_close_map.get(open_ts, btc_price)
                 fut_map[open_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
             except: continue
 
+        # --- OPRAVA ČASU PRO SPOT CVD MAPU ---
         spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
             try:
-                open_ts = int(row[0])
+                open_ts = int(row[0]) - 300000
                 spot_map[open_ts] = float(row[2]) - float(row[1])
             except: continue
 
@@ -367,6 +370,7 @@ def fetch_okx_data():
                 spot_map[open_ts] = val_s
                 scvd_12.append(val_s)
 
+        # --- OPRAVA ČASU PRO OPEN INTEREST MAPU ---
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         oi_change_map = {}
         if len(oi_res) >= 2:
@@ -374,17 +378,19 @@ def fetch_okx_data():
                 try:
                     ts_curr, val_curr = int(oi_res[idx][0]), float(oi_res[idx][1])
                     ts_prev, val_prev = int(oi_res[idx + 1][0]), float(oi_res[idx + 1][1])
-                    p_curr = candle_close_map.get(ts_curr, btc_price)
-                    p_prev = candle_close_map.get(ts_prev, btc_price)
+                    open_curr = ts_curr - 300000
+                    open_prev = ts_prev - 300000
+                    p_curr = candle_close_map.get(open_curr, btc_price)
+                    p_prev = candle_close_map.get(open_prev, btc_price)
                     if p_curr > 0 and p_prev > 0 and val_curr > 0 and val_prev > 0:
-                        oi_change_map[ts_curr] = (val_curr / p_curr) - (val_prev / p_prev)
+                        oi_change_map[open_curr] = (val_curr / p_curr) - (val_prev / p_prev)
                 except: continue
 
         oi_12 = []
         if len(oi_res) >= 13:
             for i in range(12, 0, -1):
-                ts_curr = int(oi_res[i - 1][0])
-                oi_12.append(oi_change_map.get(ts_curr, 0.0))
+                open_curr = int(oi_res[i - 1][0]) - 300000
+                oi_12.append(oi_change_map.get(open_curr, 0.0))
         else:
             oi_12 = [0.0] * 12
 
@@ -428,6 +434,8 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
         
         # HLEDÁNÍ KNOTŮ (M / W) KDEKOLIV V GRAFU
+        # Tolerance pro equal tops/lows = 50 USD
+        # Pullback / odraz mezi nimi = minimálně 40 USD
         for j in range(11, 1, -1):
             for i in range(j - 2, -1, -1):
                 
@@ -436,7 +444,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 if wick_diff_h <= 50.0:
                     max_between_h = max(highs[i + 1:j])
                     min_pullback_h = min(lows[i + 1:j])
-                    # Není tam vyšší high (s rezervou 15$) + čistý pullback aspoň 40$
+                    # Nesmí to být překonáno uprostřed a musí proběhnout pullback aspoň 40$
                     if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
                         c_higher = cum_c[j] > cum_c[i] + 15.0
                         s_higher = cum_s[j] > cum_s[i] + 3.0
@@ -457,7 +465,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 if wick_diff_l <= 50.0:
                     min_between_l = min(lows[i + 1:j])
                     max_bounce_l = max(highs[i + 1:j])
-                    # Není tam nižší low (s rezervou 15$) + čistý odraz aspoň 40$
+                    # Nesmí to být propíchnuto uprostřed a musí proběhnout odraz aspoň 40$
                     if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
                         c_lower = cum_c[j] < cum_c[i] - 15.0
                         s_lower = cum_s[j] < cum_s[i] - 3.0
@@ -486,7 +494,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 if p_Move >= -25.0 and s_Move >= 4.0 and c_Move <= -35.0:
                     return f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!", bool(liquid_ok)
 
-        # --- VARIANTY 3 (Rozšířený Zámek) ---
+        # --- VARIANTY 3 (Rozšířený Zámek na 75$ a 160$) ---
         for win in range(5, 13):
             sub_h = highs[-win:]
             sub_l = lows[-win:]
@@ -494,7 +502,6 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             close_spread = max(sub_c) - min(sub_c)
             wick_spread = max(sub_h) - min(sub_l)
 
-            # Rozšířená tolerance pro kompresi
             if close_spread <= 75.0 or wick_spread <= 160.0:
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
@@ -508,7 +515,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 if (c_sum <= -50.0 and c_neg >= win * 0.7) or (s_sum <= -12.0 and s_neg >= win * 0.7):
                     return f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!", bool(liquid_ok)
 
-        return f"Skenuji absorpci (M/W knoty ≤ 50$, Pullback min 40$ | Zámek ≤ 75$)...", False
+        return f"Skenuji absorpci (M/W knoty ≤ 50$, Pullback min 40$ | Zámek těl ≤ 75$)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
