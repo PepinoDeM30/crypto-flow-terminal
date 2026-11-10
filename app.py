@@ -736,9 +736,9 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         cum_cvd_chart.append(curr_c)
         cum_scvd_chart.append(curr_s)
         
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.34, 0.33, 0.33])
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.56, 0.22, 0.22])
     
-    # 1. Price
+    # 1. Price (zvýrazněná výška a štíhlejší profil svíček)
     fig.add_trace(go.Candlestick(x=x_axis,
                                  open=[float(c[1]) for c in c_12_asc],
                                  high=[float(c[2]) for c in c_12_asc],
@@ -746,6 +746,8 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
                                  close=[float(c[4]) for c in c_12_asc],
                                  increasing_line_color='#3fb950', decreasing_line_color='#f85149',
                                  increasing_fillcolor='#3fb950', decreasing_fillcolor='#f85149',
+                                 increasing_line_width=1.8, decreasing_line_width=1.8,
+                                 whiskerwidth=0.3,
                                  showlegend=False), row=1, col=1)
                                  
     # 2. Futures CVD 
@@ -756,27 +758,28 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
-    def get_smart_range(arr):
+    def get_smart_range(arr, pad_ratio=0.12):
         if not arr: return [0, 1]
         mn, mx = min(arr), max(arr)
-        pd_val = (mx - mn) * 0.15
+        pd_val = (mx - mn) * pad_ratio
         if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
-    p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc])
-    c_rng = get_smart_range(cum_cvd_chart)
-    s_rng = get_smart_range(cum_scvd_chart)
+    # Těsné vertikální škálování pro svíčky (pouze 2% okraj nahoře a dole pro maximální výšku těl)
+    p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc], pad_ratio=0.02)
+    c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.12)
+    s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.12)
 
     fig.update_layout(
-        height=550,
-        margin=dict(l=0, r=0, t=25, b=0, pad=0),
+        height=760,
+        margin=dict(l=6, r=6, t=20, b=0, pad=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True, range=[-1.2, 12.2]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=p_rng),
-        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
+        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-1.2, 12.2]),
         yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=c_rng),
-        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
+        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-1.2, 12.2]),
         yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=s_rng)
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
