@@ -765,10 +765,10 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
-    # Těsné vertikální škálování pro svíčky (pouze 2% okraj nahoře a dole pro maximální výšku těl)
+    # Zde je změna: CVD i SPOT teď mají pad_ratio=0.02 (2% odsazení), stejně jako cena, aby se maximalizovala výška grafu.
     p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc], pad_ratio=0.02)
-    c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.12)
-    s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.12)
+    c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.02)
+    s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.02)
 
     fig.update_layout(
         height=760,
