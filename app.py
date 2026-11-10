@@ -455,7 +455,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
 
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
         
-        # HLEDÁNÍ KNOTŮ (M / W) S PRAVIDLEM KOTVY (MAX 25$ OD ABSOLUTNÍHO VRCHOLU/DNA)
+        # --- VARIANTY 1 A 2: HLEDÁNÍ KNOTŮ (M / W) S KOTVOU (25$) A PULLBACKEM >= 120$ ---
         for j in range(11, 1, -1):
             for i in range(j - 2, -1, -1):
                 
@@ -465,7 +465,9 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                     if max(highs[i], highs[j]) >= max_all_h - 25.0:
                         max_between_h = max(highs[i + 1:j])
                         min_pullback_h = min(lows[i + 1:j])
-                        if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
+                        # Pullback mezi vrcholy minimálně 120 USD
+                        if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 120.0:
+                            # Druhý vrchol MUSÍ mít vyšší CVD (HH) než první vrchol (platí pro Var. 1 i Var. 2)
                             c_higher = cum_c[j] > cum_c[i] + 15.0
                             s_higher = cum_s[j] > cum_s[i] + 3.0
                             if c_higher or s_higher:
@@ -488,7 +490,9 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                     if min(lows[i], lows[j]) <= min_all_l + 25.0:
                         min_between_l = min(lows[i + 1:j])
                         max_bounce_l = max(highs[i + 1:j])
-                        if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
+                        # Odraz mezi dny minimálně 120 USD
+                        if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 120.0:
+                            # Druhé dno MUSÍ mít nižší CVD (LL) než první dno (platí pro Var. 1 i Var. 2)
                             c_lower = cum_c[j] < cum_c[i] - 15.0
                             s_lower = cum_s[j] < cum_s[i] - 3.0
                             if c_lower or s_lower:
@@ -505,24 +509,23 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                                     if liquid_ok: odesli_upozorneni("BULLISH ABSORPCE (Var. 2)", msg)
                                 return msg, bool(liquid_ok)
 
-        # --- VARIANTY 4 (Anomálie) ---
+        # --- VARIANTA 4: ČISTÁ ANOMÁLIE (Pohyb ceny do 400$, CVD >= 200 BTC proti Spotu <= -15 BTC) ---
         for win in [6, 8, 12]:
             p_Move = closes[-1] - closes[-win]
-            w_Range = max(highs[-win:]) - min(lows[-win:])
             c_Move = sum(cvd_12[-win:])
             s_Move = sum(scvd_12[-win:])
 
-            if abs(p_Move) <= 50.0 or w_Range <= 140.0:
-                if p_Move <= 25.0 and s_Move <= -4.0 and c_Move >= 35.0:
+            if abs(p_Move) <= 400.0:
+                if c_Move >= 200.0 and s_Move <= -15.0:
                     msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD +{c_Move:.1f} BTC proti Spotu ({s_Move:+.1f})!"
                     if liquid_ok: odesli_upozorneni("BEARISH ANOMÁLIE (Var. 4)", msg)
                     return msg, bool(liquid_ok)
-                if p_Move >= -25.0 and s_Move >= 4.0 and c_Move <= -35.0:
+                if c_Move <= -200.0 and s_Move >= 15.0:
                     msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!"
                     if liquid_ok: odesli_upozorneni("BULLISH ANOMÁLIE (Var. 4)", msg)
                     return msg, bool(liquid_ok)
 
-        # --- VARIANTY 3 (Rozšířený Zámek na 75$ a 160$) ---
+        # --- VARIANTA 3: ROZŠÍŘENÝ ZÁMEK (Body <= 150$, Knoty <= 350$, Suma CVD >= 100 BTC, bez konzistence) ---
         for win in range(5, 13):
             sub_h = highs[-win:]
             sub_l = lows[-win:]
@@ -530,24 +533,20 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             close_spread = max(sub_c) - min(sub_c)
             wick_spread = max(sub_h) - min(sub_l)
 
-            if close_spread <= 75.0 or wick_spread <= 160.0:
+            if close_spread <= 150.0 and wick_spread <= 350.0:
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
-                c_pos = sum(1 for x in cvd_12[-win:] if x > 0)
-                c_neg = sum(1 for x in cvd_12[-win:] if x < 0)
-                s_pos = sum(1 for x in scvd_12[-win:] if x > 0)
-                s_neg = sum(1 for x in scvd_12[-win:] if x < 0)
 
-                if (c_sum >= 50.0 and c_pos >= win * 0.7) or (s_sum >= 12.0 and s_pos >= win * 0.7):
-                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující nákupní delta pohlcena!"
+                if c_sum >= 100.0 or s_sum >= 20.0:
+                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Zámek těl {close_spread:.0f}$): Nákupní delta (+{c_sum:.1f} BTC) pohlcena!"
                     if liquid_ok: odesli_upozorneni("BEARISH ZÁMEK (Var. 3)", msg)
                     return msg, bool(liquid_ok)
-                if (c_sum <= -50.0 and c_neg >= win * 0.7) or (s_sum <= -12.0 and s_neg >= win * 0.7):
-                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!"
+                if c_sum <= -100.0 or s_sum <= -20.0:
+                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek těl {close_spread:.0f}$): Prodejní delta ({c_sum:+.1f} BTC) pohlcena!"
                     if liquid_ok: odesli_upozorneni("BULLISH ZÁMEK (Var. 3)", msg)
                     return msg, bool(liquid_ok)
 
-        return f"Skenuji absorpci (M/W uzamčeno k maximům, Zámek těl ≤ 75$)...", False
+        return f"Skenuji absorpci (M/W pullback ≥ 120$, Zámek ≤ 150$, Anomálie ±200 BTC)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
@@ -619,26 +618,28 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            for r_idx in range(max(sweep_idx + 1, n_today - 3), n_today):
-                cvd_at_retest = cum_cvd_today[r_idx]
-                c_open, c_close = today_candles[r_idx][1], today_candles[r_idx][4]
+            # Minimální odstup 2 svíčky od swept svíčky (sweep_idx + 2), rozdíl CVD >= ±100 BTC, bez kontroly barvy svíčky
+            if n_today > sweep_idx + 2:
+                for r_idx in range(max(sweep_idx + 2, n_today - 3), n_today):
+                    cvd_at_retest = cum_cvd_today[r_idx]
+                    cvd_diff = cvd_at_retest - cvd_at_sweep
 
-                if is_high:
-                    if (cvd_at_retest - cvd_at_sweep) >= 25.0 and (c_close > c_open or r_idx == n_today - 1):
-                        triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s vyšším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
-                        is_triggered = bool(liquid_ok)
-                        if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
-                        retest_hit = True; break
-                else:
-                    if (cvd_at_retest - cvd_at_sweep) <= -25.0 and (c_close < c_open or r_idx == n_today - 1):
-                        triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s nižším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
-                        is_triggered = bool(liquid_ok)
-                        if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
-                        retest_hit = True; break
+                    if is_high:
+                        if cvd_diff >= 100.0:
+                            triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Další pokus s vyšším CVD ({cvd_diff:+.1f} BTC)!"
+                            is_triggered = bool(liquid_ok)
+                            if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
+                            retest_hit = True; break
+                    else:
+                        if cvd_diff <= -100.0:
+                            triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Další pokus s nižším CVD ({cvd_diff:+.1f} BTC)!"
+                            is_triggered = bool(liquid_ok)
+                            if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
+                            retest_hit = True; break
 
             if not retest_hit:
                 curr_diff = cum_cvd_today[-1] - cvd_at_sweep if n_today > 0 else 0.0
-                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f}) – čekám na retest (Δ {curr_diff:+.1f})")
+                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f}) – čekám na ±100 CVD (Δ {curr_diff:+.1f})")
 
         levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
         if triggered_msg: final_msg = triggered_msg
@@ -758,14 +759,13 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode='lines', 
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
-    def get_smart_range(arr, pad_ratio=0.12):
+    def get_smart_range(arr, pad_ratio=0.02):
         if not arr: return [0, 1]
         mn, mx = min(arr), max(arr)
         pd_val = (mx - mn) * pad_ratio
         if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
-    # Zde je změna: CVD i SPOT teď mají pad_ratio=0.02 (2% odsazení), stejně jako cena, aby se maximalizovala výška grafu.
     p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc], pad_ratio=0.02)
     c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.02)
     s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.02)
