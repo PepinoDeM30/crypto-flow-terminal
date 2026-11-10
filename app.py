@@ -328,19 +328,16 @@ def fetch_okx_data():
         c_12_asc = c_12_desc[::-1]
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        # --- OPRAVA ČASU PRO FUTURES CVD MAPU ---
         vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
             try:
-                # Rubik hlásí čas konce svíčky, my odečteme 5 min pro spárování s open_ts
                 open_ts = int(row[0]) - 300000 
                 sell_usd, buy_usd = float(row[1]), float(row[2])
                 ref_p = candle_close_map.get(open_ts, btc_price)
                 fut_map[open_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
             except: continue
 
-        # --- OPRAVA ČASU PRO SPOT CVD MAPU ---
         spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
@@ -370,7 +367,6 @@ def fetch_okx_data():
                 spot_map[open_ts] = val_s
                 scvd_12.append(val_s)
 
-        # --- OPRAVA ČASU PRO OPEN INTEREST MAPU ---
         oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         oi_change_map = {}
         if len(oi_res) >= 2:
@@ -422,6 +418,9 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
         highs = [float(c[2]) for c in c_12_asc]
         lows = [float(c[3]) for c in c_12_asc]
         closes = [float(c[4]) for c in c_12_asc]
+        
+        max_all_h = max(highs)
+        min_all_l = min(lows)
 
         cum_c, cum_s = [], []
         cc, cs = 0.0, 0.0
@@ -433,53 +432,55 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
 
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
         
-        # HLEDÁNÍ KNOTŮ (M / W) KDEKOLIV V GRAFU
-        # Tolerance pro equal tops/lows = 50 USD
-        # Pullback / odraz mezi nimi = minimálně 40 USD
+        # HLEDÁNÍ KNOTŮ (M / W) S PRAVIDLEM KOTVY (MAX 25$ OD ABSOLUTNÍHO VRCHOLU/DNA)
         for j in range(11, 1, -1):
             for i in range(j - 2, -1, -1):
                 
                 # --- BEARISH M-PATTERN (Equal Highs) ---
                 wick_diff_h = abs(highs[j] - highs[i])
                 if wick_diff_h <= 50.0:
-                    max_between_h = max(highs[i + 1:j])
-                    min_pullback_h = min(lows[i + 1:j])
-                    # Nesmí to být překonáno uprostřed a musí proběhnout pullback aspoň 40$
-                    if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
-                        c_higher = cum_c[j] > cum_c[i] + 15.0
-                        s_higher = cum_s[j] > cum_s[i] + 3.0
-                        if c_higher or s_higher:
-                            span = j - i
-                            pos_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] > 0)
-                            pos_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] > 0)
-                            is_trending = (c_higher and pos_steps_c >= span * 0.65) or (s_higher and pos_steps_s >= span * 0.65)
-                            src_name = "CVD+SPOT" if (c_higher and s_higher) else ("CVD" if c_higher else "SPOT")
-                            if is_trending:
-                                msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 1 – Equal Highs Δ {wick_diff_h:.0f}$): Trendující {src_name} nad cenu!"
-                            else:
-                                msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 2 – Equal Highs Δ {wick_diff_h:.0f}$): {src_name} udělalo HH na 2. vrcholu!"
-                            return msg, bool(liquid_ok)
+                    # PRAVIDLO KOTVY: Vrcholy musí ležet na absolutním maximu 1H okna (tolerance 25 USD)
+                    if max(highs[i], highs[j]) >= max_all_h - 25.0:
+                        max_between_h = max(highs[i + 1:j])
+                        min_pullback_h = min(lows[i + 1:j])
+                        # Nesmí to být překonáno uprostřed a musí proběhnout pullback aspoň 40$
+                        if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
+                            c_higher = cum_c[j] > cum_c[i] + 15.0
+                            s_higher = cum_s[j] > cum_s[i] + 3.0
+                            if c_higher or s_higher:
+                                span = j - i
+                                pos_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] > 0)
+                                pos_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] > 0)
+                                is_trending = (c_higher and pos_steps_c >= span * 0.65) or (s_higher and pos_steps_s >= span * 0.65)
+                                src_name = "CVD+SPOT" if (c_higher and s_higher) else ("CVD" if c_higher else "SPOT")
+                                if is_trending:
+                                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 1 – Equal Highs Δ {wick_diff_h:.0f}$): Trendující {src_name} nad cenu!"
+                                else:
+                                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 2 – Equal Highs Δ {wick_diff_h:.0f}$): {src_name} udělalo HH na 2. vrcholu!"
+                                return msg, bool(liquid_ok)
 
                 # --- BULLISH W-PATTERN (Equal Lows) ---
                 wick_diff_l = abs(lows[j] - lows[i])
                 if wick_diff_l <= 50.0:
-                    min_between_l = min(lows[i + 1:j])
-                    max_bounce_l = max(highs[i + 1:j])
-                    # Nesmí to být propíchnuto uprostřed a musí proběhnout odraz aspoň 40$
-                    if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
-                        c_lower = cum_c[j] < cum_c[i] - 15.0
-                        s_lower = cum_s[j] < cum_s[i] - 3.0
-                        if c_lower or s_lower:
-                            span = j - i
-                            neg_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] < 0)
-                            neg_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] < 0)
-                            is_trending = (c_lower and neg_steps_c >= span * 0.65) or (s_lower and neg_steps_s >= span * 0.65)
-                            src_name = "CVD+SPOT" if (c_lower and s_lower) else ("CVD" if c_lower else "SPOT")
-                            if is_trending:
-                                msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 1 – Equal Lows Δ {wick_diff_l:.0f}$): Klesající {src_name} pod cenu!"
-                            else:
-                                msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 2 – Equal Lows Δ {wick_diff_l:.0f}$): {src_name} udělalo LL na 2. dně!"
-                            return msg, bool(liquid_ok)
+                    # PRAVIDLO KOTVY: Dna musí ležet na absolutním minimu 1H okna (tolerance 25 USD)
+                    if min(lows[i], lows[j]) <= min_all_l + 25.0:
+                        min_between_l = min(lows[i + 1:j])
+                        max_bounce_l = max(highs[i + 1:j])
+                        # Nesmí to být propíchnuto uprostřed a musí proběhnout odraz aspoň 40$
+                        if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
+                            c_lower = cum_c[j] < cum_c[i] - 15.0
+                            s_lower = cum_s[j] < cum_s[i] - 3.0
+                            if c_lower or s_lower:
+                                span = j - i
+                                neg_steps_c = sum(1 for k in range(i + 1, j + 1) if cvd_12[k] < 0)
+                                neg_steps_s = sum(1 for k in range(i + 1, j + 1) if scvd_12[k] < 0)
+                                is_trending = (c_lower and neg_steps_c >= span * 0.65) or (s_lower and neg_steps_s >= span * 0.65)
+                                src_name = "CVD+SPOT" if (c_lower and s_lower) else ("CVD" if c_lower else "SPOT")
+                                if is_trending:
+                                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 1 – Equal Lows Δ {wick_diff_l:.0f}$): Klesající {src_name} pod cenu!"
+                                else:
+                                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 2 – Equal Lows Δ {wick_diff_l:.0f}$): {src_name} udělalo LL na 2. dně!"
+                                return msg, bool(liquid_ok)
 
         # --- VARIANTY 4 (Anomálie) ---
         for win in [6, 8, 12]:
@@ -515,7 +516,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 if (c_sum <= -50.0 and c_neg >= win * 0.7) or (s_sum <= -12.0 and s_neg >= win * 0.7):
                     return f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!", bool(liquid_ok)
 
-        return f"Skenuji absorpci (M/W knoty ≤ 50$, Pullback min 40$ | Zámek těl ≤ 75$)...", False
+        return f"Skenuji absorpci (M/W uzamčeno k maximům, Zámek těl ≤ 75$)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
