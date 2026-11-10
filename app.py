@@ -7,6 +7,29 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import smtplib
+from email.mime.text import MIMEText
+
+# --- NASTAVENÍ E-MAILOVÝCH NOTIFIKACÍ ---
+EMAIL_SENDER = "pepinodem30@seznam.cz"
+EMAIL_PASSWORD = "aecqhnnqlxyutqpu"
+EMAIL_RECEIVER = "pepinodem30@seznam.cz"
+
+def odesli_upozorneni(setup_nazev, detail_zpravy):
+    try:
+        msg = MIMEText(detail_zpravy)
+        msg['Subject'] = f"🚨 TRADING ALERT: {setup_nazev}"
+        msg['From'] = EMAIL_SENDER
+        msg['To'] = EMAIL_RECEIVER
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+    except Exception as e:
+        print(f"E-mail se nepodařilo odeslat: {e}")
+        pass
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
@@ -439,11 +462,9 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 # --- BEARISH M-PATTERN (Equal Highs) ---
                 wick_diff_h = abs(highs[j] - highs[i])
                 if wick_diff_h <= 50.0:
-                    # PRAVIDLO KOTVY: Vrcholy musí ležet na absolutním maximu 1H okna (tolerance 25 USD)
                     if max(highs[i], highs[j]) >= max_all_h - 25.0:
                         max_between_h = max(highs[i + 1:j])
                         min_pullback_h = min(lows[i + 1:j])
-                        # Nesmí to být překonáno uprostřed a musí proběhnout pullback aspoň 40$
                         if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 40.0:
                             c_higher = cum_c[j] > cum_c[i] + 15.0
                             s_higher = cum_s[j] > cum_s[i] + 3.0
@@ -455,18 +476,18 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                                 src_name = "CVD+SPOT" if (c_higher and s_higher) else ("CVD" if c_higher else "SPOT")
                                 if is_trending:
                                     msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 1 – Equal Highs Δ {wick_diff_h:.0f}$): Trendující {src_name} nad cenu!"
+                                    if liquid_ok: odesli_upozorneni("BEARISH ABSORPCE (Var. 1)", msg)
                                 else:
                                     msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 2 – Equal Highs Δ {wick_diff_h:.0f}$): {src_name} udělalo HH na 2. vrcholu!"
+                                    if liquid_ok: odesli_upozorneni("BEARISH ABSORPCE (Var. 2)", msg)
                                 return msg, bool(liquid_ok)
 
                 # --- BULLISH W-PATTERN (Equal Lows) ---
                 wick_diff_l = abs(lows[j] - lows[i])
                 if wick_diff_l <= 50.0:
-                    # PRAVIDLO KOTVY: Dna musí ležet na absolutním minimu 1H okna (tolerance 25 USD)
                     if min(lows[i], lows[j]) <= min_all_l + 25.0:
                         min_between_l = min(lows[i + 1:j])
                         max_bounce_l = max(highs[i + 1:j])
-                        # Nesmí to být propíchnuto uprostřed a musí proběhnout odraz aspoň 40$
                         if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 40.0:
                             c_lower = cum_c[j] < cum_c[i] - 15.0
                             s_lower = cum_s[j] < cum_s[i] - 3.0
@@ -478,8 +499,10 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                                 src_name = "CVD+SPOT" if (c_lower and s_lower) else ("CVD" if c_lower else "SPOT")
                                 if is_trending:
                                     msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 1 – Equal Lows Δ {wick_diff_l:.0f}$): Klesající {src_name} pod cenu!"
+                                    if liquid_ok: odesli_upozorneni("BULLISH ABSORPCE (Var. 1)", msg)
                                 else:
                                     msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 2 – Equal Lows Δ {wick_diff_l:.0f}$): {src_name} udělalo LL na 2. dně!"
+                                    if liquid_ok: odesli_upozorneni("BULLISH ABSORPCE (Var. 2)", msg)
                                 return msg, bool(liquid_ok)
 
         # --- VARIANTY 4 (Anomálie) ---
@@ -491,9 +514,13 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
 
             if abs(p_Move) <= 50.0 or w_Range <= 140.0:
                 if p_Move <= 25.0 and s_Move <= -4.0 and c_Move >= 35.0:
-                    return f"{prefix}🔥 BEARISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD +{c_Move:.1f} BTC proti Spotu ({s_Move:+.1f})!", bool(liquid_ok)
+                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD +{c_Move:.1f} BTC proti Spotu ({s_Move:+.1f})!"
+                    if liquid_ok: odesli_upozorneni("BEARISH ANOMÁLIE (Var. 4)", msg)
+                    return msg, bool(liquid_ok)
                 if p_Move >= -25.0 and s_Move >= 4.0 and c_Move <= -35.0:
-                    return f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!", bool(liquid_ok)
+                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 4 – Anomálie {win} sv.): CVD {c_Move:+.1f} BTC proti Spotu (+{s_Move:.1f})!"
+                    if liquid_ok: odesli_upozorneni("BULLISH ANOMÁLIE (Var. 4)", msg)
+                    return msg, bool(liquid_ok)
 
         # --- VARIANTY 3 (Rozšířený Zámek na 75$ a 160$) ---
         for win in range(5, 13):
@@ -512,9 +539,13 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                 s_neg = sum(1 for x in scvd_12[-win:] if x < 0)
 
                 if (c_sum >= 50.0 and c_pos >= win * 0.7) or (s_sum >= 12.0 and s_pos >= win * 0.7):
-                    return f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující nákupní delta pohlcena!", bool(liquid_ok)
+                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující nákupní delta pohlcena!"
+                    if liquid_ok: odesli_upozorneni("BEARISH ZÁMEK (Var. 3)", msg)
+                    return msg, bool(liquid_ok)
                 if (c_sum <= -50.0 and c_neg >= win * 0.7) or (s_sum <= -12.0 and s_neg >= win * 0.7):
-                    return f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!", bool(liquid_ok)
+                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Var. 3 – Zámek {close_spread:.0f}$): Trendující prodejní delta pohlcena!"
+                    if liquid_ok: odesli_upozorneni("BULLISH ZÁMEK (Var. 3)", msg)
+                    return msg, bool(liquid_ok)
 
         return f"Skenuji absorpci (M/W uzamčeno k maximům, Zámek těl ≤ 75$)...", False
     except Exception:
@@ -596,11 +627,13 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
                     if (cvd_at_retest - cvd_at_sweep) >= 25.0 and (c_close > c_open or r_idx == n_today - 1):
                         triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s vyšším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
                         is_triggered = bool(liquid_ok)
+                        if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
                         retest_hit = True; break
                 else:
                     if (cvd_at_retest - cvd_at_sweep) <= -25.0 and (c_close < c_open or r_idx == n_today - 1):
                         triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): OI výplach {oi_flush:.1f} BTC + Retest s nižším CVD ({cvd_at_retest - cvd_at_sweep:+.1f} BTC)!"
                         is_triggered = bool(liquid_ok)
+                        if is_triggered: odesli_upozorneni(f"SFP {name} RETEST", triggered_msg)
                         retest_hit = True; break
 
             if not retest_hit:
