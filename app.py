@@ -465,9 +465,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                     if max(highs[i], highs[j]) >= max_all_h - 25.0:
                         max_between_h = max(highs[i + 1:j])
                         min_pullback_h = min(lows[i + 1:j])
-                        # Pullback mezi vrcholy minimálně 120 USD
                         if max_between_h <= max(highs[i], highs[j]) + 15.0 and (max(highs[i], highs[j]) - min_pullback_h) >= 120.0:
-                            # Druhý vrchol MUSÍ mít vyšší CVD (HH) než první vrchol (platí pro Var. 1 i Var. 2)
                             c_higher = cum_c[j] > cum_c[i] + 15.0
                             s_higher = cum_s[j] > cum_s[i] + 3.0
                             if c_higher or s_higher:
@@ -490,9 +488,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                     if min(lows[i], lows[j]) <= min_all_l + 25.0:
                         min_between_l = min(lows[i + 1:j])
                         max_bounce_l = max(highs[i + 1:j])
-                        # Odraz mezi dny minimálně 120 USD
                         if min_between_l >= min(lows[i], lows[j]) - 15.0 and (max_bounce_l - min(lows[i], lows[j])) >= 120.0:
-                            # Druhé dno MUSÍ mít nižší CVD (LL) než první dno (platí pro Var. 1 i Var. 2)
                             c_lower = cum_c[j] < cum_c[i] - 15.0
                             s_lower = cum_s[j] < cum_s[i] - 3.0
                             if c_lower or s_lower:
@@ -618,7 +614,6 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            # Minimální odstup 2 svíčky od swept svíčky (sweep_idx + 2), rozdíl CVD >= ±100 BTC, bez kontroly barvy svíčky
             if n_today > sweep_idx + 2:
                 for r_idx in range(max(sweep_idx + 2, n_today - 3), n_today):
                     cvd_at_retest = cum_cvd_today[r_idx]
@@ -739,7 +734,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.56, 0.22, 0.22])
     
-    # 1. Price (zvýrazněná výška a štíhlejší profil svíček)
+    # 1. Price (12 uzavřených 5m svíček)
     fig.add_trace(go.Candlestick(x=x_axis,
                                  open=[float(c[1]) for c in c_12_asc],
                                  high=[float(c[2]) for c in c_12_asc],
@@ -750,6 +745,42 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
                                  increasing_line_width=1.8, decreasing_line_width=1.8,
                                  whiskerwidth=0.3,
                                  showlegend=False), row=1, col=1)
+
+    # NEZÁVISLÝ LIVE PRICE TRACKER (vodorovná laserová linka + živý bod za poslední svíčkou)
+    fig.add_trace(go.Scatter(
+        x=[-0.8, 13.6],
+        y=[b_price, b_price],
+        mode='lines',
+        line=dict(color='rgba(0, 243, 255, 0.55)', width=1.4, dash='dot'),
+        hoverinfo='skip',
+        showlegend=False
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=[11.55],
+        y=[b_price],
+        mode='markers',
+        marker=dict(color='#00f3ff', size=7, line=dict(color='#ffffff', width=1.5)),
+        hoverinfo='skip',
+        showlegend=False
+    ), row=1, col=1)
+
+    # Pravý posuvný štítek (autobar / scroll) pevně vázaný na vertikální osu ceny
+    fig.add_annotation(
+        x=1.0,
+        y=b_price,
+        xref='paper',
+        yref='y',
+        text=f"<b>{b_price:.0f}</b>",
+        showarrow=False,
+        xanchor='right',
+        yanchor='middle',
+        font=dict(family="Orbitron, sans-serif", size=12, color="#00f3ff"),
+        bgcolor="rgba(4, 6, 9, 0.95)",
+        bordercolor="#00f3ff",
+        borderwidth=1.5,
+        borderpad=4
+    )
                                  
     # 2. Futures CVD 
     fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode='lines', 
@@ -766,7 +797,8 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
-    p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc], pad_ratio=0.02)
+    # Zahrnutí b_price do vizuálního rozsahu osy Y (aby živý štítek nikdy nevyjel mimo obrazovku)
+    p_rng = get_smart_range([float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc] + [float(b_price)], pad_ratio=0.04)
     c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.02)
     s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.02)
 
@@ -775,11 +807,11 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         margin=dict(l=6, r=6, t=20, b=0, pad=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True, range=[-1.2, 12.2]),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True, range=[-0.8, 13.6]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=p_rng),
-        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-1.2, 12.2]),
+        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]),
         yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=c_rng),
-        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-1.2, 12.2]),
+        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]),
         yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=s_rng)
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
