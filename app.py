@@ -13,7 +13,7 @@ from plotly.subplots import make_subplots
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
 
-# --- TRVALÁ PAMĚŤ SERVERU ---
+# --- TRVALÁ PAMĚŤ SERVERU (PROTI SPAMU + ŽIVÝ SBĚR OBCHODŮ, OI A LIKVIDACÍ) ---
 @st.cache_resource
 def get_realtime_engine():
     return {
@@ -26,20 +26,31 @@ def get_realtime_engine():
         "oi_start_map": {},
         "oi_live_delta": {},
         "last_oi_btc": None,
-        # Cache pro stabilní likvidační levely (aktualizace 1x za 5 min nebo při sweepu)
-        "liq_cache": {"ts": 0, "upper_p": 0.0, "upper_btc": 0.0, "lower_p": 0.0, "lower_btc": 0.0}
+        "liq_cache": {
+            "candle_ts": 0,
+            "upper_p": 0.0,
+            "upper_btc": 0.0,
+            "lower_p": 0.0,
+            "lower_btc": 0.0
+        }
     }
 
 ENGINE = get_realtime_engine()
 
-def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, force=False):
+def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key=None, category_cooldown=1200, force=False):
     now_ts = time.time()
     with ENGINE["lock"]:
         if not force:
             last_sent = ENGINE["sent_alerts"].get(setup_id_key, 0.0)
             if (now_ts - last_sent) < cooldown_sec:
                 return False
+            if category_key:
+                last_cat_sent = ENGINE["sent_alerts"].get(category_key, 0.0)
+                if (now_ts - last_cat_sent) < category_cooldown:
+                    return False
         ENGINE["sent_alerts"][setup_id_key] = now_ts
+        if category_key:
+            ENGINE["sent_alerts"][category_key] = now_ts
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -75,7 +86,7 @@ components.html("""
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800;900&display=swap');
 
 #MainMenu {visibility: hidden !important; display: none !important;}
 header[data-testid="stHeader"] {visibility: hidden !important; display: none !important;}
@@ -127,27 +138,15 @@ iframe[height="0"] {display: none !important;}
     border-bottom: 2px solid rgba(247, 147, 26, 0.4);
 }
 
-.matrix-live-price {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 38px;
-    font-weight: 900;
-    color: #f0f6fc;
-    letter-spacing: 2px;
-    text-align: center;
-    padding: 2px 0;
-    text-shadow: 0 0 15px rgba(0, 243, 255, 0.6), 0 2px 6px rgba(0, 0, 0, 1);
-}
-
-/* FUTURISTICKÝ OKX MATRIX S BING OBRÁZKY */
 .matrix-unified { 
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.65), rgba(4, 6, 9, 0.88)), 
+        linear-gradient(rgba(4, 6, 9, 0.55), rgba(4, 6, 9, 0.88)), 
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');
     background-position: center top;
     background-size: cover;
     border: 1px solid #2dd4bf; 
     border-radius: 18px; 
-    padding: 22px 14px 25px 14px; 
+    padding: 16px 8px 18px 8px; 
     text-align: center; 
     margin-bottom: 18px; 
     box-shadow: 0 8px 35px rgba(0, 243, 255, 0.2); 
@@ -155,33 +154,153 @@ iframe[height="0"] {display: none !important;}
     overflow: hidden;
 }
 
-.thermometer-box {
+.matrix-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 1.55fr 1.05fr;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.thermo-card {
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.4), rgba(4, 6, 9, 0.7)),
+        linear-gradient(rgba(4, 6, 9, 0.25), rgba(4, 6, 9, 0.65)),
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_vertical_futuristic_3D_cybernetic_glass_thermometer_gauge.jpg');
-    background-position: center;
+    background-position: center center;
     background-size: cover;
-    border: 1px solid rgba(0, 243, 255, 0.4);
+    border: 1px solid rgba(0, 243, 255, 0.45);
     border-radius: 14px;
-    padding: 15px 6px;
-    height: 100%;
+    padding: 10px 4px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+    align-items: center;
+    min-height: 350px;
+    box-shadow: inset 0 0 22px rgba(0, 0, 0, 0.85), 0 0 15px rgba(0, 243, 255, 0.12);
+    position: relative;
+}
+
+.thermo-tube-wrap {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 175px;
+    margin: 6px 0;
+    gap: 5px;
+}
+
+.thermo-scale {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 8px;
+    font-weight: 800;
+    color: #cbd5e1;
+    text-align: right;
+    text-shadow: 0 1px 3px #000;
+}
+
+.thermo-glass {
+    width: 22px;
+    height: 100%;
+    background: rgba(4, 8, 15, 0.82);
+    border: 1.5px solid rgba(247, 147, 26, 0.65);
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: inset 0 0 10px rgba(0, 243, 255, 0.35), 0 0 10px rgba(247, 147, 26, 0.25);
+}
+
+.thermo-zero-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: #ffffff;
+    z-index: 4;
+    box-shadow: 0 0 6px #00f3ff;
+}
+
+@keyframes plasma-pump {
+    0% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }
+    50% { filter: brightness(1.45) drop-shadow(0 0 14px currentColor); }
+    100% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }
+}
+
+.thermo-mercury-up {
+    position: absolute;
+    bottom: 50%;
+    left: 2px;
+    right: 2px;
+    background: linear-gradient(180deg, #00f3ff 0%, #3fb950 100%);
+    border-radius: 8px 8px 0 0;
+    color: #3fb950;
+    animation: plasma-pump 1.8s infinite ease-in-out;
+    z-index: 2;
+}
+
+.thermo-mercury-down {
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    right: 2px;
+    background: linear-gradient(180deg, #f85149 0%, #ff0055 100%);
+    border-radius: 0 0 8px 8px;
+    color: #f85149;
+    animation: plasma-pump 1.8s infinite ease-in-out;
+    z-index: 2;
 }
 
 .liq-bumper-box {
     background-image: 
-        linear-gradient(rgba(4, 6, 9, 0.5), rgba(4, 6, 9, 0.8)),
+        linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.72)),
         url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_futuristic_3D_horizontal_HUD_target_bumper_frame_on_a_pitc.jpg');
-    background-position: center;
+    background-position: center center;
     background-size: cover;
-    border: 1px solid rgba(247, 147, 26, 0.5);
+    border: 1.5px solid rgba(247, 147, 26, 0.65);
+    border-radius: 13px;
+    padding: 10px 6px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.85), inset 0 0 14px rgba(0, 243, 255, 0.18);
+}
+
+.matrix-live-price {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 31px;
+    font-weight: 900;
+    color: #f0f6fc;
+    letter-spacing: 1px;
+    text-align: center;
+    padding: 10px 2px;
+    margin: 6px 0;
+    background: radial-gradient(circle, rgba(0, 243, 255, 0.14) 0%, rgba(4, 6, 9, 0.65) 80%);
+    border-top: 1px solid rgba(0, 243, 255, 0.35);
+    border-bottom: 1px solid rgba(0, 243, 255, 0.35);
+    border-radius: 10px;
+    text-shadow: 0 0 14px rgba(0, 243, 255, 0.65), 0 2px 6px rgba(0, 0, 0, 1);
+}
+
+.oi-center-box {
+    background: linear-gradient(180deg, rgba(10, 16, 28, 0.88), rgba(4, 6, 9, 0.95));
+    border: 1px solid rgba(0, 243, 255, 0.45);
     border-radius: 12px;
-    padding: 10px;
-    margin-bottom: 8px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.7);
+    padding: 8px 6px;
+    margin-top: 8px;
+    box-shadow: inset 0 0 12px rgba(0, 243, 255, 0.15);
+}
+
+.oi-bar-track {
+    width: 100%;
+    height: 10px;
+    background: rgba(4, 8, 15, 0.9);
+    border: 1px solid rgba(247, 147, 26, 0.5);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+    margin: 5px 0;
 }
 
 .setups-container {
@@ -273,25 +392,6 @@ def load_trading_data():
         return total_pnl, win_rate
     except Exception:
         return 0.0, 0.0
-
-@st.cache_data(ttl=3600)
-def get_contract_spec(inst_id):
-    for inst_type in ["SWAP", "FUTURES"]:
-        for host in ["https://eea.okx.com", "https://www.okx.com"]:
-            try:
-                url = f"{host}/api/v5/public/instruments?instType={inst_type}&instId={inst_id}"
-                data = requests.get(url, timeout=3).json().get("data", [])
-                if data:
-                    ct_val = float(data[0].get("ctVal", 0.0001))
-                    ct_ccy = data[0].get("ctValCcy", "BTC")
-                    return ct_val, ct_ccy
-            except Exception:
-                continue
-    if "UM_XPERP" in inst_id or "USDC" in inst_id:
-        return 0.0001, "BTC"
-    elif "USDT" in inst_id:
-        return 0.01, "BTC"
-    return 100.0, "USD"
 
 def get_okx_candles(bar, limit, ts, inst_priority=None):
     if inst_priority is None:
@@ -410,45 +510,84 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
-# VÝPOČET LIKVIDAČNÍCH MAGNETŮ DO ±2 % OD CENY
-def compute_liquidation_magnets(c_300, btc_price):
-    now_ts = time.time()
+# --- VÝPOČET NEJVĚTŠÍCH ODHADOVANÝCH LIKVIDAČNÍCH LEVELŮ DO ±2 % OD CENY ---
+def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
+    curr_5m_candle = (int(time.time() * 1000) // 300000) * 300000
     with ENGINE["lock"]:
         cache = ENGINE["liq_cache"]
-        # Pokud je cache mladší než 4.5 minuty a cena neprorazila level, vrátíme ji
-        if (now_ts - cache["ts"]) < 270 and cache["upper_p"] > btc_price:
+        # Level drží stabilně po celou 5M svíčku, pokud ho cena mezitím nevybere
+        if (cache["candle_ts"] == curr_5m_candle and
+            cache["upper_p"] > btc_price + 30.0 and
+            0 < cache["lower_p"] < btc_price - 30.0):
             return cache["upper_p"], cache["upper_btc"], cache["lower_p"], cache["lower_btc"]
 
-    upper_limit = btc_price * 1.02
-    lower_limit = btc_price * 0.98
+    min_up = btc_price * 1.002
+    max_up = btc_price * 1.020
+    min_down = btc_price * 0.980
+    max_down = btc_price * 0.998
 
-    clusters = {}
-    for c in c_300[:60]: # Poslední 3–4 hodiny
+    short_clusters = {}
+    long_clusters = {}
+
+    recent_desc = c_300[:144] if len(c_300) >= 144 else c_300
+    recent_asc = recent_desc[::-1]
+    n_c = len(recent_asc)
+
+    highs_asc = [float(c[2]) for c in recent_asc]
+    lows_asc = [float(c[3]) for c in recent_asc]
+
+    for idx, c in enumerate(recent_asc):
         try:
-            h, l, vol = float(c[2]), float(c[3]), float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
-            mid = (h + l) / 2.0
-            # Seskupení po 25$ blocích
-            cluster_p = round(mid / 25.0) * 25.0
-            if lower_limit <= cluster_p <= upper_limit:
-                clusters[cluster_p] = clusters.get(cluster_p, 0.0) + (vol * 0.12)
+            c_ts = int(c[0])
+            o, h, l, cl = float(c[1]), float(c[2]), float(c[3]), float(c[4])
+            vol_btc = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
+            oi_ch = oi_change_map.get(c_ts, 0.0)
+
+            # Váha otevřených pozic na dané svíčce (nárůst OI + objem)
+            pos_weight = max(oi_ch, 0.0) * 1.6 + (vol_btc * 0.14)
+            if pos_weight <= 0:
+                continue
+
+            max_h_after = max(highs_asc[idx + 1:]) if (idx + 1) < n_c else h
+            min_l_after = min(lows_asc[idx + 1:]) if (idx + 1) < n_c else l
+
+            # Odhadované likvidační prahy Shortů (páky 100x, 75x, 50x nad vstupem)
+            for lev_mult, share in [(1.0085, 0.40), (1.0125, 0.35), (1.0175, 0.25)]:
+                liq_s = round((h * lev_mult) / 25.0) * 25.0
+                # Pokud tento likvidační práh ještě nebyl vybrán následujícími svíčkami
+                if liq_s > max_h_after and min_up <= liq_s <= max_up:
+                    short_clusters[liq_s] = short_clusters.get(liq_s, 0.0) + (pos_weight * share)
+
+            # Odhadované likvidační prahy Longů (páky 100x, 75x, 50x pod vstupem)
+            for lev_mult, share in [(0.9915, 0.40), (0.9875, 0.35), (0.9825, 0.25)]:
+                liq_l = round((l * lev_mult) / 25.0) * 25.0
+                if liq_l < min_l_after and min_down <= liq_l <= max_down:
+                    long_clusters[liq_l] = long_clusters.get(liq_l, 0.0) + (pos_weight * share)
         except Exception:
             continue
 
-    upper_p, upper_btc = btc_price * 1.012, 125.4
-    lower_p, lower_btc = btc_price * 0.988, 142.8
+    if short_clusters:
+        upper_p = max(short_clusters, key=short_clusters.get)
+        upper_btc = short_clusters[upper_p]
+    else:
+        upper_p = round((btc_price * 1.012) / 25.0) * 25.0
+        upper_btc = 85.0
 
-    above_clusters = {p: v for p, v in clusters.items() if p > btc_price}
-    below_clusters = {p: v for p, v in clusters.items() if p < btc_price}
-
-    if above_clusters:
-        upper_p = max(above_clusters, key=above_clusters.get)
-        upper_btc = above_clusters[upper_p]
-    if below_clusters:
-        lower_p = max(below_clusters, key=below_clusters.get)
-        lower_btc = below_clusters[lower_p]
+    if long_clusters:
+        lower_p = max(long_clusters, key=long_clusters.get)
+        lower_btc = long_clusters[lower_p]
+    else:
+        lower_p = round((btc_price * 0.988) / 25.0) * 25.0
+        lower_btc = 92.0
 
     with ENGINE["lock"]:
-        ENGINE["liq_cache"] = {"ts": now_ts, "upper_p": upper_p, "upper_btc": upper_btc, "lower_p": lower_p, "lower_btc": lower_btc}
+        ENGINE["liq_cache"] = {
+            "candle_ts": curr_5m_candle,
+            "upper_p": upper_p,
+            "upper_btc": upper_btc,
+            "lower_p": lower_p,
+            "lower_btc": lower_btc
+        }
 
     return upper_p, upper_btc, lower_p, lower_btc
 
@@ -593,7 +732,7 @@ def fetch_okx_data():
         oi_12 = [oi_change_map.get(int(c[0]), 0.0) for c in c_12_asc]
 
         vp_data = compute_1h_volume_profile(candles_1m_fut, c_12_asc)
-        liq_data = compute_liquidation_magnets(candles_300, btc_price)
+        liq_data = compute_liquidation_magnets(candles_300, oi_change_map, btc_price)
         
         cvd_1 = sum(cvd_12[-1:]) if len(cvd_12) >= 1 else 0.0
         cvd_5 = sum(cvd_12[-5:]) if len(cvd_12) >= 5 else 0.0
@@ -611,7 +750,7 @@ def fetch_okx_data():
                 cvd_12, scvd_12, c_12_asc, candles_300, candles_1h, fut_map, spot_map, oi_change_map, btc_price, vp_data, liq_data)
     except Exception:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74000.0, 100.0, 72000.0, 100.0))
+                [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0))
 
 def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
     try:
@@ -640,11 +779,12 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
         for j in range(11, 1, -1):
             for i in range(j - 2, -1, -1):
                 
-                # BEARISH EQUAL HIGHS
+                # --- 1. BEARISH EQUAL HIGHS ---
                 wick_diff_h = abs(highs[j] - highs[i])
                 if wick_diff_h <= 50.0 and max(highs[i], highs[j]) >= max_all_h - 25.0:
                     between_lows = lows[i + 1:j]
-                    if not between_lows: continue
+                    if not between_lows:
+                        continue
                     min_pullback_h = min(between_lows)
                     pullback_rel_idx = between_lows.index(min_pullback_h)
                     pullback_idx = (i + 1) + pullback_rel_idx
@@ -663,17 +803,19 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                         valid_bear_abs = (c_diff >= 15.0 and s_diff >= -2.0) or (s_diff >= 3.0 and c_diff >= -5.0)
                         if valid_bear_abs:
                             src_name = "CVD+SPOT" if (c_diff >= 15.0 and s_diff >= 3.0) else ("CVD" if c_diff >= 15.0 else "SPOT")
-                            msg = f"{prefix}🔥 BEARISH ABSORPCE (Equal Highs Δ {wick_diff_h:.0f}$): {src_name} anomálie na vrcholu (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            setup_key = f"EQH_{timestamps[i]}"
+                            msg = f"{prefix}🔥 BEARISH ABSORPCE (Equal Highs Δ {wick_diff_h:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na vrcholu (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
+                            zone_bucket = int(round(max(highs[i], highs[j]) / 150.0) * 150)
+                            setup_key = f"EQH_{timestamps[i]}_{zone_bucket}"
                             if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BEARISH EQUAL HIGHS", msg, cooldown_sec=7200)
+                                odesli_upozorneni(setup_key, "SETUP 1: BEARISH EQUAL HIGHS", msg, cooldown_sec=7200, category_key="SETUP1_ANY", category_cooldown=1200)
                             return msg, bool(liquid_ok)
 
-                # BULLISH EQUAL LOWS
+                # --- 2. BULLISH EQUAL LOWS ---
                 wick_diff_l = abs(lows[j] - lows[i])
                 if wick_diff_l <= 50.0 and min(lows[i], lows[j]) <= min_all_l + 25.0:
                     between_highs = highs[i + 1:j]
-                    if not between_highs: continue
+                    if not between_highs:
+                        continue
                     max_bounce_l = max(between_highs)
                     bounce_rel_idx = between_highs.index(max_bounce_l)
                     bounce_idx = (i + 1) + bounce_rel_idx
@@ -692,13 +834,14 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                         valid_bull_abs = (c_diff <= -15.0 and s_diff <= 2.0) or (s_diff <= -3.0 and c_diff <= 5.0)
                         if valid_bull_abs:
                             src_name = "CVD+SPOT" if (c_diff <= -15.0 and s_diff <= -3.0) else ("CVD" if c_diff <= -15.0 else "SPOT")
-                            msg = f"{prefix}🔥 BULLISH ABSORPCE (Equal Lows Δ {wick_diff_l:.0f}$): {src_name} anomálie na dně (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            setup_key = f"EQL_{timestamps[i]}"
+                            msg = f"{prefix}🔥 BULLISH ABSORPCE (Equal Lows Δ {wick_diff_l:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na dně (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
+                            zone_bucket = int(round(min(lows[i], lows[j]) / 150.0) * 150)
+                            setup_key = f"EQL_{timestamps[i]}_{zone_bucket}"
                             if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BULLISH EQUAL LOWS", msg, cooldown_sec=7200)
+                                odesli_upozorneni(setup_key, "SETUP 1: BULLISH EQUAL LOWS", msg, cooldown_sec=7200, category_key="SETUP1_ANY", category_cooldown=1200)
                             return msg, bool(liquid_ok)
 
-        # ÚZKÝ RANGE (ZÁMEK) - s přísným 2h cooldownem na stejný časový klastr
+        # --- 3. ÚZKÝ RANGE (ZÁMEK) - Uzamčený na cenové pásmo (neposouvá se s každou svíčkou) ---
         max_body_pct = 0.0018
         for win in range(6, 12):
             sub_c = closes[-win:]
@@ -709,17 +852,17 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             if close_spread <= (ref_price * max_body_pct):
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
-                range_key_ts = timestamps[-win]
+                range_zone_bucket = int(round(ref_price / 200.0) * 200)
 
                 if (c_sum >= 35.0 and s_sum >= -2.0) or (s_sum >= 5.0 and c_sum >= 0.0):
-                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen nákup (CVD {c_sum:+.1f} BTC)!"
+                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen nákup (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
                     if liquid_ok:
-                        odesli_upozorneni(f"RNG_BEAR_{range_key_ts}", "SETUP 1: BEARISH ÚZKÝ RANGE", msg, cooldown_sec=7200)
+                        odesli_upozorneni(f"RNG_BEAR_ZONE_{range_zone_bucket}", "SETUP 1: BEARISH ÚZKÝ RANGE", msg, cooldown_sec=5400, category_key="SETUP1_ANY", category_cooldown=1200)
                     return msg, bool(liquid_ok)
                 if (c_sum <= -35.0 and s_sum <= 2.0) or (s_sum <= -5.0 and c_sum <= 0.0):
-                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen prodej (CVD {c_sum:+.1f} BTC)!"
+                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen prodej (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
                     if liquid_ok:
-                        odesli_upozorneni(f"RNG_BULL_{range_key_ts}", "SETUP 1: BULLISH ÚZKÝ RANGE", msg, cooldown_sec=7200)
+                        odesli_upozorneni(f"RNG_BULL_ZONE_{range_zone_bucket}", "SETUP 1: BULLISH ÚZKÝ RANGE", msg, cooldown_sec=5400, category_key="SETUP1_ANY", category_cooldown=1200)
                     return msg, bool(liquid_ok)
 
         return "Skenuji Setup 1 (Equal Highs/Lows + Úzký Range)...", False
@@ -731,8 +874,10 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
         if len(candles_300) < 20 or len(candles_1h) < 10:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
-        try: tz_p = ZoneInfo("Europe/Prague")
-        except Exception: tz_p = timezone(timedelta(hours=1))
+        try:
+            tz_p = ZoneInfo("Europe/Prague")
+        except Exception:
+            tz_p = timezone(timedelta(hours=1))
 
         now_prague = datetime.now(tz_p)
         current_date = now_prague.date()
@@ -743,7 +888,8 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_p)
             if dt.date() == yesterday_date:
                 pdh, pdl = max(pdh, float(c[2])), min(pdl, float(c[3]))
-        if pdh == 0.0: pdh, pdl = 0.0, 0.0
+        if pdh == 0.0:
+            pdh, pdl = 0.0, 0.0
 
         all_5m_asc = candles_300[::-1]
         today_candles = []
@@ -753,15 +899,27 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
         for c in all_5m_asc:
             ts_c = int(c[0])
             dt = datetime.fromtimestamp(ts_c / 1000, tz_p)
-            if dt.date() != current_date: continue
+            if dt.date() != current_date:
+                continue
             today_candles.append((ts_c, float(c[1]), float(c[2]), float(c[3]), float(c[4]), dt.hour))
-            if 1 <= dt.hour < 7: asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
-            elif 9 <= dt.hour < 14: lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
+            if 1 <= dt.hour < 7:
+                asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
+            elif 9 <= dt.hour < 14:
+                lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
 
-        if asia_h == 0.0: asia_h, asia_l = 0.0, 0.0
-        if lon_h == 0.0: lon_h, lon_l = 0.0, 0.0
+        if asia_h == 0.0:
+            asia_h, asia_l = 0.0, 0.0
+        if lon_h == 0.0:
+            lon_h, lon_l = 0.0, 0.0
 
-        raw_levels = [("PDH", pdh, True, 0), ("PDL", pdl, False, 0), ("ASIA H", asia_h, True, 7), ("ASIA L", asia_l, False, 7), ("LON H", lon_h, True, 14), ("LON L", lon_l, False, 14)]
+        raw_levels = [
+            ("PDH", pdh, True, 0),
+            ("PDL", pdl, False, 0),
+            ("ASIA H", asia_h, True, 7),
+            ("ASIA L", asia_l, False, 7),
+            ("LON H", lon_h, True, 14),
+            ("LON L", lon_l, False, 14)
+        ]
         cum_cvd_today = []
         running_cvd = 0.0
         for tc in today_candles:
@@ -774,64 +932,82 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
         n_today = len(today_candles)
 
         for name, val, is_high, valid_from_hour in raw_levels:
-            if val <= 0 or now_prague.hour < valid_from_hour: continue
+            if val <= 0 or now_prague.hour < valid_from_hour:
+                continue
 
             sweep_idx = None
             for idx, tc in enumerate(today_candles):
-                if tc[5] < valid_from_hour: continue
-                if is_high and tc[2] >= val: sweep_idx = idx; break
-                if not is_high and tc[3] <= val: sweep_idx = idx; break
+                if tc[5] < valid_from_hour:
+                    continue
+                if is_high and tc[2] >= val:
+                    sweep_idx = idx
+                    break
+                if not is_high and tc[3] <= val:
+                    sweep_idx = idx
+                    break
 
             if sweep_idx is None:
                 untouched_levels.append(f"{name}: {val:.0f}")
                 continue
 
             ts_sweep = today_candles[sweep_idx][0]
-            oi_flush = min(oi_change_map.get(ts_sweep, 0.0), oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0))
+            oi_flush = min(
+                oi_change_map.get(ts_sweep, 0.0),
+                oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0)
+            )
 
-            if oi_flush > -50.0: continue
+            if oi_flush > -50.0:
+                continue
 
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            # OPRAVENÉ PRAVIDLO: Retest musí přijít mezi 2. až 9. pětiminutovou svíčkou po sweepu!
+            # PŘÍSNÝ INTERVAL RETESTU: Minimálně 2. svíčka (sweep_idx + 2) až maximálně 9. svíčka (sweep_idx + 9)
             min_retest_idx = sweep_idx + 2
-            max_retest_idx = min(sweep_idx + 9, n_today)
+            max_retest_idx = min(sweep_idx + 9, n_today - 1)
 
-            if n_today >= min_retest_idx:
-                for r_idx in range(min_retest_idx, max_retest_idx):
+            if (n_today - 1) >= min_retest_idx:
+                for r_idx in range(min_retest_idx, max_retest_idx + 1):
                     tc_r = today_candles[r_idx]
                     cvd_at_retest = cum_cvd_today[r_idx]
                     cvd_diff = cvd_at_retest - cvd_at_sweep
 
-                    # Fyzická kontrola, že se cena vrátila k levelu
-                    price_returned = (tc_r[2] >= val - 30.0) if is_high else (tc_r[3] <= val + 30.0)
+                    # Fyzický návrat ceny k levelu (do 35 $ od hladiny)
+                    price_returned = (tc_r[2] >= val - 35.0) if is_high else (tc_r[3] <= val + 35.0)
 
                     if price_returned:
-                        if is_high and cvd_diff >= 80.0:
-                            triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest v okně 2-9 svíček + OI výplach {oi_flush:.1f} BTC (CVD Δ {cvd_diff:+.1f})!"
-                            is_triggered = bool(liquid_ok)
-                            if is_triggered:
-                                odesli_upozorneni(f"SFP_{name}_{current_date}", f"SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
-                            retest_hit = True; break
-                        elif not is_high and cvd_diff <= -80.0:
-                            triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest v okně 2-9 svíček + OI výplach {oi_flush:.1f} BTC (CVD Δ {cvd_diff:+.1f})!"
-                            is_triggered = bool(liquid_ok)
-                            if is_triggered:
-                                odesli_upozorneni(f"SFP_{name}_{current_date}", f"SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
-                            retest_hit = True; break
+                        if is_high and cvd_diff >= 100.0:
+                            # Zobrazujeme aktivní signál, pokud nastal v posledních 3 svíčkách
+                            if r_idx >= (n_today - 3):
+                                triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
+                                is_triggered = bool(liquid_ok)
+                                if is_triggered:
+                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
+                            retest_hit = True
+                            break
+                        elif not is_high and cvd_diff <= -100.0:
+                            if r_idx >= (n_today - 3):
+                                triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
+                                is_triggered = bool(liquid_ok)
+                                if is_triggered:
+                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
+                            retest_hit = True
+                            break
 
-            # Pokud uplynulo více než 9 svíček a retest nepřišel, level expiruje a nezobrazuje se
-            if not retest_hit:
-                if n_today <= sweep_idx + 9:
-                    curr_diff = cum_cvd_today[-1] - cvd_at_sweep
-                    sv_left = (sweep_idx + 9) - n_today
-                    pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán – čekám retest ({sv_left} svíček do vypršení)")
+            # Pokud ještě neuplynulo 9 svíček od sweepu, ukážeme odpočet; po 9. svíčce level expiruje!
+            candles_since_sweep = (n_today - 1) - sweep_idx
+            if not retest_hit and 0 <= candles_since_sweep <= 9:
+                curr_diff = cum_cvd_today[-1] - cvd_at_sweep
+                sv_left = 9 - candles_since_sweep
+                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f}) – okno retestu 2–9 sv. (zbývá {sv_left} sv. | CVD Δ {curr_diff:+.1f})")
 
-        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely vybrány"
-        if triggered_msg: final_msg = triggered_msg
-        elif pending_retest_msgs: final_msg = " | ".join(pending_retest_msgs)
-        else: final_msg = "Skenuji Macro SFP levely (PDH, PDL, ASIA, LON)..."
+        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
+        if triggered_msg:
+            final_msg = triggered_msg
+        elif pending_retest_msgs:
+            final_msg = " | ".join(pending_retest_msgs)
+        else:
+            final_msg = "Čekám na protnutí Macro Levelu s výplachem OI (-50 BTC) a retest (2–9 svíček)..."
 
         return final_msg, is_triggered, levels_str
     except Exception:
@@ -877,76 +1053,113 @@ if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
 
 c_cvd1 = '#3fb950' if cvd1 >= 0 else '#f85149'
+c_cvd5 = '#3fb950' if cvd5 >= 0 else '#f85149'
+c_cvd9 = '#3fb950' if cvd9 >= 0 else '#f85149'
+
 c_scvd1 = '#3fb950' if scvd1 >= 0 else '#f85149'
+c_scvd5 = '#3fb950' if scvd5 >= 0 else '#f85149'
+c_scvd9 = '#3fb950' if scvd9 >= 0 else '#f85149'
+
 c_oi1 = '#3fb950' if oi1 >= 0 else '#f85149'
+c_oi5 = '#3fb950' if oi5 >= 0 else '#f85149'
+c_oi9 = '#3fb950' if oi9 >= 0 else '#f85149'
 
 pnl_color = '#3fb950' if total_pnl >= 0 else '#f85149'
 pnl_sign = '+$' if total_pnl >= 0 else '-$'
 
-st.markdown("""
-<div class="gold-btc-banner"></div>
-""", unsafe_allow_html=True)
+# Výpočet výšky plazmové rtuti v teploměrech (0 až 48 % od středu nahoru nebo dolů)
+cvd_bar_pct = min(48.0, max(4.0, (abs(cvd5) / 150.0) * 48.0))
+cvd_mercury_cls = "thermo-mercury-up" if cvd5 >= 0 else "thermo-mercury-down"
 
-# --- NOVÝ FUTURISTICKÝ OKX MATRIX S BING TEPLOMĚRY A LIKVIDAČNÍMI MANTINELY ---
-st.markdown(f"""
-<div class="matrix-unified">
-<div style="color: #ffffff; font-weight: 900; font-size: 19px; margin-bottom: 15px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW & LIQUIDATION MATRIX</div>
+spot_bar_pct = min(48.0, max(4.0, (abs(scvd5) / 30.0) * 48.0))
+spot_mercury_cls = "thermo-mercury-up" if scvd5 >= 0 else "thermo-mercury-down"
 
-<div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 12px; align-items: center;">
+oi_bar_pct = min(48.0, max(4.0, (abs(oi5) / 120.0) * 48.0))
+oi_bar_left = "50%" if oi5 >= 0 else f"{50.0 - oi_bar_pct:.1f}%"
+oi_bar_color = "#3fb950" if oi5 >= 0 else "#f85149"
 
-    <!-- LEVÝ SLOUPEC: CVD TEPLOMĚR -->
-    <div class="thermometer-box">
-        <div style="color: #00f3ff; font-size: 11px; font-weight: 900; letter-spacing: 1px;">CVD (FUT)</div>
-        <div style="font-size: 24px; font-weight: 900; color: {c_cvd1}; text-shadow: 0 0 10px rgba(0,0,0,0.9);">{cvd1:+,.1f}</div>
-        <div style="font-size: 11px; color: #94a3b8; font-weight: 700;">5m / 25m / 45m</div>
-        <div style="font-size: 13px; font-weight: 900; color: #e2e8f0;">{cvd5:+,.1f} | {cvd9:+,.1f}</div>
-    </div>
+st.markdown('<div class="gold-btc-banner"></div>', unsafe_allow_html=True)
 
-    <!-- STŘEDNÍ SLOUPEC: LIKVIDACE + ŽIVÁ CENA + OI -->
-    <div>
-        <!-- HORNÍ LIKVIDAČNÍ MANTINEL (+2%) -->
-        <div class="liq-bumper-box">
-            <div style="color: #f85149; font-size: 11px; font-weight: 900; letter-spacing: 1px;">SHORT LIQ TARGET (+2%)</div>
-            <div style="font-size: 20px; font-weight: 900; color: #ffffff; font-family: 'Orbitron', sans-serif;">{upper_p:,.0f} $</div>
-            <div style="color: #f1e05a; font-size: 10px; font-weight: 800;">Odhad: {upper_btc:.1f} BTC</div>
-        </div>
-
-        <!-- ŽIVÁ CENA BTC -->
-        <div class="matrix-live-price">{b_price:,.0f} $</div>
-
-        <!-- SPODNÍ LIKVIDAČNÍ MANTINEL (-2%) -->
-        <div class="liq-bumper-box" style="margin-top: 8px;">
-            <div style="color: #3fb950; font-size: 11px; font-weight: 900; letter-spacing: 1px;">LONG LIQ TARGET (-2%)</div>
-            <div style="font-size: 20px; font-weight: 900; color: #ffffff; font-family: 'Orbitron', sans-serif;">{lower_p:,.0f} $</div>
-            <div style="color: #f1e05a; font-size: 10px; font-weight: 800;">Odhad: {lower_btc:.1f} BTC</div>
-        </div>
-
-        <!-- OI TLAKOMĚR DOLE UPROSTŘED -->
-        <div style="background: rgba(13, 19, 31, 0.6); border: 1px solid rgba(0, 243, 255, 0.3); border-radius: 10px; padding: 6px; margin-top: 6px;">
-            <span style="color: #e2e8f0; font-size: 11px; font-weight: 900; letter-spacing: 1px;">OPEN INTEREST (OI): </span>
-            <span style="font-size: 16px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f} BTC</span>
-        </div>
-    </div>
-
-    <!-- PRAVÝ SLOUPEC: SPOT TEPLOMĚR -->
-    <div class="thermometer-box">
-        <div style="color: #f1e05a; font-size: 11px; font-weight: 900; letter-spacing: 1px;">SPOT CVD</div>
-        <div style="font-size: 24px; font-weight: 900; color: {c_scvd1}; text-shadow: 0 0 10px rgba(0,0,0,0.9);">{scvd1:+,.1f}</div>
-        <div style="font-size: 11px; color: #94a3b8; font-weight: 700;">5m / 25m / 45m</div>
-        <div style="font-size: 13px; font-weight: 900; color: {e2e8f0};">{scvd5:+,.1f} | {scvd9:+,.1f}</div>
-    </div>
-
+# --- FUTURISTICKÝ OKX MATRIX (BEZ PRÁZDNÝCH ŘÁDKŮ UVNITŘ HTML PRO 100% STABILITU) ---
+matrix_html = f"""<div class="matrix-unified">
+<div style="color: #ffffff; font-weight: 900; font-size: 18px; margin-bottom: 12px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW & LIQUIDATION MATRIX</div>
+<div class="matrix-grid">
+<div class="thermo-card">
+<div style="color: #00f3ff; font-size: 12px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 2px 4px #000;">CVD (FUT)</div>
+<div style="font-size: 20px; font-weight: 900; color: {c_cvd1}; text-shadow: 0 0 10px #000;">{cvd1:+,.1f}</div>
+<div class="thermo-tube-wrap">
+<div class="thermo-scale">
+<span style="color:#3fb950;">+150</span>
+<span style="color:#7ee787;">+75</span>
+<span style="color:#ffffff;">0</span>
+<span style="color:#ffa198;">-75</span>
+<span style="color:#f85149;">-150</span>
+</div>
+<div class="thermo-glass">
+<div class="thermo-zero-line"></div>
+<div class="{cvd_mercury_cls}" style="height: {cvd_bar_pct:.1f}%;"></div>
 </div>
 </div>
-""", unsafe_allow_html=True)
+<div style="width: 100%; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 4px;">
+<div style="font-size: 9px; color: #94a3b8; font-weight: 800;">25M / 45M DELTA</div>
+<div style="font-size: 13px; font-weight: 900; color: {c_cvd5};">{cvd5:+,.1f}</div>
+<div style="font-size: 11px; font-weight: 900; color: {c_cvd9}; opacity: 0.85;">{cvd9:+,.1f}</div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; justify-content: space-between;">
+<div class="liq-bumper-box">
+<div style="color: #f85149; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 SHORT LIQ (+2%)</div>
+<div style="font-size: 19px; font-weight: 900; color: #ffffff; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 10px rgba(248,81,73,0.7);">{upper_p:,.0f} $</div>
+<div style="color: #f1e05a; font-size: 11px; font-weight: 900; text-shadow: 0 1px 3px #000;">({upper_btc:.1f} BTC)</div>
+</div>
+<div class="matrix-live-price">{b_price:,.0f}</div>
+<div class="liq-bumper-box">
+<div style="color: #3fb950; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 LONG LIQ (-2%)</div>
+<div style="font-size: 19px; font-weight: 900; color: #ffffff; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 10px rgba(63,185,80,0.7);">{lower_p:,.0f} $</div>
+<div style="color: #f1e05a; font-size: 11px; font-weight: 900; text-shadow: 0 1px 3px #000;">({lower_btc:.1f} BTC)</div>
+</div>
+<div class="oi-center-box">
+<div style="color: #00f3ff; font-size: 10px; font-weight: 900; letter-spacing: 1px;">OPEN INTEREST (OI)</div>
+<div class="oi-bar-track">
+<div style="position:absolute; left:50%; top:0; bottom:0; width:2px; background:#fff; z-index:3;"></div>
+<div style="position:absolute; top:1px; bottom:1px; left:{oi_bar_left}; width:{oi_bar_pct:.1f}%; background:{oi_bar_color}; border-radius:4px; box-shadow: 0 0 8px {oi_bar_color};"></div>
+</div>
+<div style="font-size: 15px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f} BTC</div>
+<div style="font-size: 11px; font-weight: 800; color: #cbd5e1;"><span style="color:{c_oi5};">{oi5:+,.1f}</span> | <span style="color:{c_oi9};">{oi9:+,.1f}</span></div>
+</div>
+</div>
+<div class="thermo-card">
+<div style="color: #f1e05a; font-size: 12px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 2px 4px #000;">SPOT CVD</div>
+<div style="font-size: 20px; font-weight: 900; color: {c_scvd1}; text-shadow: 0 0 10px #000;">{scvd1:+,.1f}</div>
+<div class="thermo-tube-wrap">
+<div class="thermo-glass">
+<div class="thermo-zero-line"></div>
+<div class="{spot_mercury_cls}" style="height: {spot_bar_pct:.1f}%;"></div>
+</div>
+<div class="thermo-scale" style="text-align: left;">
+<span style="color:#3fb950;">+30</span>
+<span style="color:#7ee787;">+15</span>
+<span style="color:#ffffff;">0</span>
+<span style="color:#ffa198;">-15</span>
+<span style="color:#f85149;">-30</span>
+</div>
+</div>
+<div style="width: 100%; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 4px;">
+<div style="font-size: 9px; color: #94a3b8; font-weight: 800;">25M / 45M DELTA</div>
+<div style="font-size: 13px; font-weight: 900; color: {c_scvd5};">{scvd5:+,.1f}</div>
+<div style="font-size: 11px; font-weight: 900; color: {c_scvd9}; opacity: 0.85;">{scvd9:+,.1f}</div>
+</div>
+</div>
+</div>
+</div>"""
+
+st.markdown(matrix_html, unsafe_allow_html=True)
 
 # VIZUÁLNÍ GRAF (11 UZAVŘENÝCH + 1 ŽIVÁ 5M SVÍČKA)
-st.markdown(f"""
-<div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
-    <div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE & 1H VOLUME PROFILE (LIVE 5M VELO MODE)</div>
-    <div style="color: #2dd4bf; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-shadow: 0 1px 3px black;">VAH: {vah_1h:.0f} 🔸 POC: {poc_1h:.0f} 🔸 VAL: {val_1h:.0f}</div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(f"""<div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">
+<div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE & 1H VOLUME PROFILE (LIVE 5M VELO MODE)</div>
+<div style="color: #2dd4bf; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-shadow: 0 1px 3px black;">VAH: {vah_1h:.0f} 🔸 POC: {poc_1h:.0f} 🔸 VAL: {val_1h:.0f}</div>
+</div>""", unsafe_allow_html=True)
 
 if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     x_axis = list(range(12))
@@ -1024,6 +1237,15 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         showlegend=False
     ), row=1, col=1)
 
+    fig.add_trace(go.Scatter(
+        x=[11.0],
+        y=[b_price],
+        mode='markers',
+        marker=dict(color='#00f3ff', size=7, line=dict(color='#ffffff', width=1.5)),
+        hoverinfo='skip',
+        showlegend=False
+    ), row=1, col=1)
+
     fig.add_annotation(
         x=1.0,
         y=b_price,
@@ -1049,10 +1271,12 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
                              line=dict(color='#f1e05a', width=3, shape='spline', smoothing=1.1), showlegend=False), row=3, col=1)
 
     def get_smart_range(arr, pad_ratio=0.02):
-        if not arr: return [0, 1]
+        if not arr:
+            return [0, 1]
         mn, mx = min(arr), max(arr)
         pd_val = (mx - mn) * pad_ratio
-        if pd_val == 0: pd_val = 10
+        if pd_val == 0:
+            pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
     price_points = [float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc] + [float(b_price)]
@@ -1079,24 +1303,21 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
 
 # SETUP KARTY 
 liq_color = "#3fb950" if liquid_ok else "#94a3b8"
-st.markdown(f"""
-<div class="setups-container">
+st.markdown(f"""<div class="setups-container">
 <div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>
 <div class="alert-box {"signal-triggered" if trg1 else ""}">
 <div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (EQUAL H/L & ÚZKÝ RANGE)</div>
 <div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>
 </div>
 <div class="alert-box {"signal-triggered" if trg2 else ""}" style="margin-bottom: 0;">
-<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP + RETEST (2-9 SVÍČEK)</div>
+<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP + RETEST (2–9 SVÍČEK)</div>
 <div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>
 <div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>
 </div>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
 # MONEY JOURNAL
-st.markdown(f"""
-<div class="money-journal">
+st.markdown(f"""<div class="money-journal">
 <div class="money-content">
 <div style="text-align: center;">
 <div style="color: #7ee787; font-size: 14px; font-weight: 900; letter-spacing: 2px; text-shadow: 0px 2px 6px rgba(0,0,0,0.9);">CELKOVÝ PNL</div>
@@ -1107,8 +1328,7 @@ st.markdown(f"""
 <div style="font-size: 34px; font-weight: 900; color: #f1e05a; text-shadow: 0px 2px 10px rgba(0,0,0,0.9);">{win_rate:.2f} %</div>
 </div>
 </div>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
 if st.button("🔄 AKTUALIZOVAT"):
     st.rerun()
