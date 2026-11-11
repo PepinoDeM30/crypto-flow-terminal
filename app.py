@@ -8,13 +8,10 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import smtplib
-from email.mime.text import MIMEText
 
-# --- NASTAVENÍ E-MAILOVÝCH NOTIFIKACÍ + OCHRANA PROTI SPAMU ---
-EMAIL_SENDER = "pepinodem30@seznam.cz"
-EMAIL_PASSWORD = "aecqhnnqlxyutqpu"
-EMAIL_RECEIVER = "pepinodem30@seznam.cz"
+# --- NASTAVENÍ TELEGRAM NOTIFIKACÍ + OCHRANA PROTI SPAMU ---
+TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
+TELEGRAM_CHAT_ID = "9209356727"
 
 ALERT_COOLDOWN_STATE = {"last_key": "", "last_ts": 0.0}
 
@@ -25,20 +22,18 @@ def odesli_upozorneni(setup_nazev, detail_zpravy):
     if ALERT_COOLDOWN_STATE["last_key"] == alert_key and (now_ts - ALERT_COOLDOWN_STATE["last_ts"]) < 900:
         return
     try:
-        msg = MIMEText(detail_zpravy)
-        msg['Subject'] = f"🚨 TRADING ALERT: {setup_nazev}"
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = EMAIL_RECEIVER
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": f"🚨 <b>{setup_nazev}</b>\n\n{detail_zpravy}",
+            "parse_mode": "HTML"
+        }
+        requests.post(url, json=payload, timeout=5)
+        
         ALERT_COOLDOWN_STATE["last_key"] = alert_key
         ALERT_COOLDOWN_STATE["last_ts"] = now_ts
     except Exception as e:
-        print(f"E-mail se nepodařilo odeslat: {e}")
+        print(f"Telegram alert selhal: {e}")
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
@@ -355,7 +350,6 @@ def compute_1m_bridge_delta(candles_1m, candle_open_ts, is_spot=False):
     return total_delta
 
 def compute_1h_volume_profile(candles_1m_vp, c_12_asc):
-    """Vypočítá 1H Volume Profile (POC, VAH, VAL - 70% Value Area) z 60 1m svíček."""
     source_candles = candles_1m_vp[1:61] if len(candles_1m_vp) >= 30 else c_12_asc
     if not source_candles:
         return 0.0, 0.0, 0.0
@@ -438,7 +432,6 @@ def fetch_okx_data():
                 spot_map[open_ts] = float(row[2]) - float(row[1])
             except: continue
 
-        # Stahujeme 62 1m svíček pro přesný 1H Volume Profile i případný 1m bridge
         candles_1m_fut = get_okx_candles("1m", 62, ts, ["BTC-USDT-SWAP", "BTC-USD_UM_XPERP-310404"])
         missing_spot = any(int(c[0]) not in spot_map for c in c_12_asc[-2:])
         candles_1m_spot = get_okx_candles("1m", 25, ts, ["BTC-USDT"]) if missing_spot else []
@@ -524,7 +517,6 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
 
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
         
-        # --- VĚTEV 1: EQUAL HIGHS / LOWS (max 50$ od sebe, kotva 25$, pullback >= 120$, CVD >= 15 / Spot >= 3) ---
         for j in range(11, 1, -1):
             for i in range(j - 2, -1, -1):
                 
@@ -558,8 +550,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                                 if liquid_ok: odesli_upozorneni("SETUP 1: BULLISH EQUAL LOWS", msg)
                                 return msg, bool(liquid_ok)
 
-        # --- VĚTEV 2: ÚZKÝ RANGE / ZÁMEK (min. 5 svíček, body-to-body <= 0.20%, CVD >= ±35 BTC nebo Spot >= ±5 BTC) ---
-        max_body_pct = 0.0020  # 0.20 %
+        max_body_pct = 0.0020
         for win in range(5, 13):
             sub_c = closes[-win:]
             ref_price = sub_c[-1] if sub_c[-1] > 0 else 75000.0
@@ -828,7 +819,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
             hoverinfo='skip', showlegend=False
         ), row=1, col=1)
 
-        # Štítky VAH, POC, VAL vlevo (aby nekolidovaly s živou cenou vpravo)
+        # Štítky VAH, POC, VAL vlevo
         for lbl_txt, lbl_val, lbl_col in [("VAH", vah_1h, "#f59e0b"), ("POC", poc_1h, "#f7931a"), ("VAL", val_1h, "#f59e0b")]:
             fig.add_annotation(
                 x=0.0, y=lbl_val,
@@ -855,7 +846,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
                                  whiskerwidth=0.3,
                                  showlegend=False), row=1, col=1)
 
-    # NEZÁVISLÝ LIVE PRICE TRACKER (vodorovná laserová linka + živý bod za poslední svíčkou)
+    # NEZÁVISLÝ LIVE PRICE TRACKER
     fig.add_trace(go.Scatter(
         x=[-0.8, 13.6],
         y=[b_price, b_price],
@@ -874,7 +865,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         showlegend=False
     ), row=1, col=1)
 
-    # Pravý posuvný štítek (autobar / scroll) pevně vázaný na vertikální osu ceny
+    # Pravý posuvný štítek
     fig.add_annotation(
         x=1.0,
         y=b_price,
