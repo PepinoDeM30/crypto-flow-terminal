@@ -16,12 +16,15 @@ from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- NASTAVENÍ TELEGRAM NOTIFIKACÍ ---
+# --- NASTAVENÍ A GLOBÁLNÍ PARAMETRY ---
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v5.json"
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v6.json"
 
-# --- ZABEZPEČENÉ NAČTENÍ OKX API KLÍČŮ ZE STREAMLIT SECRETS ---
+SL_PCT = 0.0030         # Pevný Market Stop-Loss 0.30%
+PB_1M_PCT = 0.0012      # Požadovaný pullback v ceně pro vstup na 1M grafu (0.12%)
+S2_LIMIT_PCT = 0.0005   # Limit Entry u Setupu 2 je na 0.05% od sweepnuté hladiny
+
 try:
     OKX_SECRETS = {
         "API_KEY": st.secrets.get("OKX_API_KEY", ""),
@@ -29,7 +32,7 @@ try:
         "PASSPHRASE": st.secrets.get("OKX_PASSPHRASE", ""),
         "INST_ID": st.secrets.get("OKX_INST_ID", "BTC-USD_UM_XPERP-310404"),
         "CONTRACT_BTC": float(st.secrets.get("OKX_CONTRACT_BTC", "0.0001")),
-        "ENABLED": st.secrets.get("AI_TRADING_ENABLED", "false").lower() == "true"
+        "ENABLED": str(st.secrets.get("AI_TRADING_ENABLED", "false")).lower() == "true"
     }
 except Exception:
     OKX_SECRETS = {"ENABLED": False}
@@ -83,7 +86,7 @@ def get_setup_cooldown_remaining(lock_key, lock_duration=3600):
 # --- INTERNÍ AI AGENT (PŘÍMÁ EXEKUCE NA OKX V5) ---
 def execute_okx_agent_trade(plan):
     if not OKX_SECRETS.get("ENABLED"):
-        return "🤖 AI Agent: Exekuce vypnuta (AI_TRADING_ENABLED=false)"
+        return "🤖 AI Agent: Exekuce vypnuta v Secrets."
 
     try:
         api_key = OKX_SECRETS["API_KEY"]
@@ -91,7 +94,7 @@ def execute_okx_agent_trade(plan):
         passphrase = OKX_SECRETS["PASSPHRASE"]
         inst_id = OKX_SECRETS["INST_ID"]
         ct_val = OKX_SECRETS["CONTRACT_BTC"]
-        base_url = "https://eea.okx.com" 
+        base_url = "https://eea.okx.com"
 
         if not api_key or not sec_key:
             return "🤖 AI Agent: Chybí API klíče v Secrets!"
@@ -116,46 +119,44 @@ def execute_okx_agent_trade(plan):
 
         # 1. Kontrola otevřených pozic
         pos = okx_req("GET", f"/api/v5/account/positions?instId={inst_id}")
-        if pos.get("data") and len(pos["data"]) > 0:
-            for p in pos["data"]:
-                if abs(float(p.get("pos", "0"))) > 0:
-                    return "🤖 AI Agent: Zamítnuto (Už existuje otevřená pozice)"
+        if pos.get("data") and any(abs(float(p.get("pos", "0"))) > 0 for p in pos["data"]):
+            return "🤖 AI Agent Zamítnuto: Již existuje otevřená pozice."
 
         # 2. Kontrola čekajících limit příkazů
         pend = okx_req("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
         if pend.get("data") and len(pend["data"]) > 0:
-            return "🤖 AI Agent: Zamítnuto (Už existuje čekající limitka)"
+            return "🤖 AI Agent Zamítnuto: Již existuje čekající limitka."
 
         # 3. Nastavení páky 10x
         okx_req("POST", "/api/v5/account/set-leverage", json.dumps({"instId": inst_id, "lever": "10", "mgnMode": "isolated"}))
 
-        # 4. Výpočet kontraktů pro pozici 1000 USD (Marže 100 USD * Páka 10x)
+        # 4. Výpočet kontraktů
         entry_px = float(plan["entry"])
         pos_usd = 1000.0
         total_btc = pos_usd / entry_px
         total_ct = int(total_btc / ct_val)
         
         if total_ct < 2:
-            return "🤖 AI Agent: Zamítnuto (Příliš malý kapitál pro rozdělení 50/50)"
+            return "🤖 AI Agent Zamítnuto: Malý kapitál pro 50/50 rozdělení."
         
         ct1 = total_ct // 2
         ct2 = total_ct - ct1
         side = plan["side"]
 
-        # 5. Odeslání Limit objednávek s Market SL a Limit TP
+        # 5. Odeslání MAKER objednávek (post_only = 100% Maker Fee)
         def place_ord(sz, tp_px):
             body = {
                 "instId": inst_id,
                 "tdMode": "isolated",
                 "side": side,
-                "ordType": "limit",
+                "ordType": "post_only",
                 "px": str(int(entry_px)),
                 "sz": str(sz),
                 "attachAlgoOrds": [{
                     "slTriggerPx": str(int(plan["sl_market"])),
-                    "slOrdPx": "-1", # -1 = Market
+                    "slOrdPx": "-1",
                     "tpTriggerPx": str(int(tp_px)),
-                    "tpOrdPx": str(int(tp_px)) # Konkrétní cena = Limit
+                    "tpOrdPx": str(int(tp_px))
                 }]
             }
             return okx_req("POST", "/api/v5/trade/order", json.dumps(body))
@@ -164,7 +165,7 @@ def execute_okx_agent_trade(plan):
         r2 = place_ord(ct2, plan["tp2_limit_50pct"])
 
         if str(r1.get("code")) == "0" or str(r2.get("code")) == "0":
-            return f"🤖 AI AGENT: ZADAL 2x LIMIT PŘÍKAZY NA OKX! (Pozice: 1000$ | Páka 10x)"
+            return f"🤖 AI AGENT: ZADAL 2x POST-ONLY PŘÍKAZY NA OKX! (1000$)"
         else:
             return f"⚠️ AI AGENT CHYBA: {r1.get('msg', '')} {r2.get('msg', '')}"
 
@@ -183,13 +184,12 @@ def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, 
         _save_alert_history(history)
 
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": f"🚨 <b>{setup_nazev}</b>\n\n{detail_zpravy}",
             "parse_mode": "HTML"
         }
-        res = requests.post(url, json=payload, timeout=5)
+        res = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=5)
         return res.status_code == 200
     except Exception as e:
         print(f"Telegram alert selhal: {e}")
@@ -197,12 +197,12 @@ def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, 
 
 def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label):
     if direction == "SHORT":
-        sl_p = entry_p * 1.0025
+        sl_p = entry_p * (1.0 + SL_PCT)
         tp2_p = lower_liq_p if (0 < lower_liq_p < entry_p) else (entry_p * 0.988)
         tp1_p = entry_p - 0.5 * (entry_p - tp2_p)
         side_str = "sell"
     else:
-        sl_p = entry_p * 0.9975
+        sl_p = entry_p * (1.0 - SL_PCT)
         tp2_p = upper_liq_p if (upper_liq_p > entry_p) else (entry_p * 1.012)
         tp1_p = entry_p + 0.5 * (tp2_p - entry_p)
         side_str = "buy"
@@ -216,9 +216,6 @@ def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label):
         "direction": direction,
         "side": side_str,
         "entry_type": "limit",
-        "position_usd": 1000.0,
-        "margin_usd": 100.0,
-        "leverage": 10,
         "entry": round(entry_p, 1),
         "sl_market": round(sl_p, 1),
         "tp1_limit_50pct": round(tp1_p, 1),
@@ -228,261 +225,278 @@ def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label):
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
-js_theme_code = "\n".join([
-    "<script>",
-    "try {",
-    "    const doc = window.parent.document;",
-    "    let meta = doc.querySelector('meta[name=\"theme-color\"]');",
-    "    if (!meta) {",
-    "        meta = doc.createElement('meta');",
-    "        meta.name = 'theme-color';",
-    "        doc.head.appendChild(meta);",
-    "    }",
-    "    meta.content = '#040609';",
-    "    doc.body.style.backgroundColor = '#040609';",
-    "    doc.documentElement.style.backgroundColor = '#040609';",
-    "} catch (e) {}",
-    "</script>"
-])
-components.html(js_theme_code, height=0)
+components.html("""
+<script>
+    try {
+        const doc = window.parent.document;
+        let meta = doc.querySelector('meta[name="theme-color"]');
+        if (!meta) {
+            meta = doc.createElement('meta');
+            meta.name = 'theme-color';
+            doc.head.appendChild(meta);
+        }
+        meta.content = '#040609';
+        doc.body.style.backgroundColor = '#040609';
+        doc.documentElement.style.backgroundColor = '#040609';
+    } catch (e) {}
+</script>
+""", height=0)
 
-css_styles = "\n".join([
-    "<style>",
-    "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800;900&display=swap');",
-    "#MainMenu {visibility: hidden !important; display: none !important;}",
-    "header[data-testid='stHeader'] {visibility: hidden !important; display: none !important;}",
-    "footer {visibility: hidden !important; display: none !important;}",
-    ".viewerBadge_container__1QSob {display: none !important;}",
-    "[data-testid='stAppViewBlockContainer'] {",
-    "    padding-top: 0rem !important;",
-    "    padding-bottom: 1.5rem !important;",
-    "    padding-left: 0.4rem !important;",
-    "    padding-right: 0.4rem !important;",
-    "    margin-top: -65px !important;",
-    "}",
-    "iframe[height='0'] {display: none !important;}",
-    "@keyframes app-heart-pulse {",
-    "    0% { background-size: 230% auto; }",
-    "    50% { background-size: 260% auto; }",
-    "    100% { background-size: 230% auto; }",
-    "}",
-    ".stApp {",
-    "    background-color: #040609;",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.75)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_ruby_red_neon_heart.jpg');",
-    "    background-attachment: fixed;",
-    "    background-position: center 45%;",
-    "    background-repeat: no-repeat;",
-    "    animation: app-heart-pulse 3.5s infinite ease-in-out;",
-    "    color: #f0f6fc;",
-    "}",
-    ".gold-btc-banner {",
-    "    width: 100vw;",
-    "    margin-left: calc(-50vw + 50%);",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.45)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');",
-    "    background-position: center center;",
-    "    background-size: cover;",
-    "    background-repeat: no-repeat;",
-    "    height: 480px;",
-    "    display: flex;",
-    "    flex-direction: column;",
-    "    align-items: center;",
-    "    justify-content: flex-end;",
-    "    padding-bottom: 25px;",
-    "    margin-bottom: 25px;",
-    "    box-shadow: 0 15px 45px rgba(0, 0, 0, 0.85);",
-    "    border-bottom: 2px solid rgba(247, 147, 26, 0.4);",
-    "}",
-    ".matrix-unified {",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.55), rgba(4, 6, 9, 0.88)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');",
-    "    background-position: center top;",
-    "    background-size: cover;",
-    "    border: 1px solid #2dd4bf;",
-    "    border-radius: 18px;",
-    "    padding: 16px 8px 18px 8px;",
-    "    text-align: center;",
-    "    margin-bottom: 18px;",
-    "    box-shadow: 0 8px 35px rgba(0, 243, 255, 0.2);",
-    "    position: relative;",
-    "    overflow: hidden;",
-    "}",
-    ".matrix-grid {",
-    "    display: grid;",
-    "    grid-template-columns: 1.05fr 1.55fr 1.05fr;",
-    "    gap: 8px;",
-    "    align-items: stretch;",
-    "}",
-    ".thermo-card {",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.25), rgba(4, 6, 9, 0.65)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_vertical_futuristic_3D_cybernetic_glass_thermometer_gauge.jpg');",
-    "    background-position: center center;",
-    "    background-size: cover;",
-    "    border: 1px solid rgba(0, 243, 255, 0.45);",
-    "    border-radius: 14px;",
-    "    padding: 10px 4px;",
-    "    display: flex;",
-    "    flex-direction: column;",
-    "    justify-content: space-between;",
-    "    align-items: center;",
-    "    min-height: 350px;",
-    "    box-shadow: inset 0 0 22px rgba(0, 0, 0, 0.85), 0 0 15px rgba(0, 243, 255, 0.12);",
-    "    position: relative;",
-    "}",
-    ".thermo-tube-wrap {",
-    "    display: flex;",
-    "    flex-direction: row;",
-    "    align-items: center;",
-    "    justify-content: center;",
-    "    width: 100%;",
-    "    height: 175px;",
-    "    margin: 6px 0;",
-    "    gap: 5px;",
-    "}",
-    ".thermo-scale {",
-    "    display: flex;",
-    "    flex-direction: column;",
-    "    justify-content: space-between;",
-    "    height: 100%;",
-    "    font-family: 'Orbitron', sans-serif;",
-    "    font-size: 8px;",
-    "    font-weight: 800;",
-    "    color: #cbd5e1;",
-    "    text-align: right;",
-    "    text-shadow: 0 1px 3px #000;",
-    "}",
-    ".thermo-glass {",
-    "    width: 22px;",
-    "    height: 100%;",
-    "    background: rgba(4, 8, 15, 0.82);",
-    "    border: 1.5px solid rgba(247, 147, 26, 0.65);",
-    "    border-radius: 12px;",
-    "    position: relative;",
-    "    overflow: hidden;",
-    "    box-shadow: inset 0 0 10px rgba(0, 243, 255, 0.35), 0 0 10px rgba(247, 147, 26, 0.25);",
-    "}",
-    ".thermo-zero-line {",
-    "    position: absolute;",
-    "    top: 50%;",
-    "    left: 0;",
-    "    width: 100%;",
-    "    height: 2px;",
-    "    background: #ffffff;",
-    "    z-index: 4;",
-    "    box-shadow: 0 0 6px #00f3ff;",
-    "}",
-    "@keyframes plasma-pump {",
-    "    0% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }",
-    "    50% { filter: brightness(1.45) drop-shadow(0 0 14px currentColor); }",
-    "    100% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }",
-    "}",
-    ".thermo-mercury-up {",
-    "    position: absolute;",
-    "    bottom: 50%;",
-    "    left: 2px;",
-    "    right: 2px;",
-    "    background: linear-gradient(180deg, #00f3ff 0%, #3fb950 100%);",
-    "    border-radius: 8px 8px 0 0;",
-    "    color: #3fb950;",
-    "    animation: plasma-pump 1.8s infinite ease-in-out;",
-    "    z-index: 2;",
-    "}",
-    ".thermo-mercury-down {",
-    "    position: absolute;",
-    "    top: 50%;",
-    "    left: 2px;",
-    "    right: 2px;",
-    "    background: linear-gradient(180deg, #f85149 0%, #ff0055 100%);",
-    "    border-radius: 0 0 8px 8px;",
-    "    color: #f85149;",
-    "    animation: plasma-pump 1.8s infinite ease-in-out;",
-    "    z-index: 2;",
-    "}",
-    ".liq-bumper-box {",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.72)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_futuristic_3D_horizontal_HUD_target_bumper_frame_on_a_pitc.jpg');",
-    "    background-position: center center;",
-    "    background-size: cover;",
-    "    border: 1.5px solid rgba(247, 147, 26, 0.65);",
-    "    border-radius: 13px;",
-    "    padding: 10px 6px;",
-    "    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.85), inset 0 0 14px rgba(0, 243, 255, 0.18);",
-    "}",
-    ".matrix-live-price {",
-    "    font-family: 'Orbitron', sans-serif;",
-    "    font-size: 31px;",
-    "    font-weight: 900;",
-    "    color: #f0f6fc;",
-    "    letter-spacing: 1px;",
-    "    text-align: center;",
-    "    padding: 10px 2px;",
-    "    margin: 6px 0;",
-    "    background: radial-gradient(circle, rgba(0, 243, 255, 0.14) 0%, rgba(4, 6, 9, 0.65) 80%);",
-    "    border-top: 1px solid rgba(0, 243, 255, 0.35);",
-    "    border-bottom: 1px solid rgba(0, 243, 255, 0.35);",
-    "    border-radius: 10px;",
-    "    text-shadow: 0 0 14px rgba(0, 243, 255, 0.65), 0 2px 6px rgba(0, 0, 0, 1);",
-    "}",
-    ".oi-center-box {",
-    "    background: linear-gradient(180deg, rgba(10, 16, 28, 0.88), rgba(4, 6, 9, 0.95));",
-    "    border: 1px solid rgba(0, 243, 255, 0.45);",
-    "    border-radius: 12px;",
-    "    padding: 8px 6px;",
-    "    margin-top: 8px;",
-    "    box-shadow: inset 0 0 12px rgba(0, 243, 255, 0.15);",
-    "}",
-    ".oi-bar-track {",
-    "    width: 100%;",
-    "    height: 10px;",
-    "    background: rgba(4, 8, 15, 0.9);",
-    "    border: 1px solid rgba(247, 147, 26, 0.5);",
-    "    border-radius: 6px;",
-    "    position: relative;",
-    "    overflow: hidden;",
-    "    margin: 5px 0;",
-    "}",
-    ".setups-container {",
-    "    background-image: linear-gradient(rgba(4, 6, 9, 0.75), rgba(4, 6, 9, 0.92)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');",
-    "    background-position: center bottom;",
-    "    background-size: cover;",
-    "    border: 1px solid #2dd4bf;",
-    "    border-radius: 16px;",
-    "    padding: 15px;",
-    "    margin-bottom: 18px;",
-    "    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);",
-    "}",
-    ".alert-box {",
-    "    background: rgba(13, 19, 31, 0.35);",
-    "    border: 1px solid rgba(31, 41, 55, 0.6);",
-    "    padding: 14px;",
-    "    border-radius: 15px;",
-    "    margin-bottom: 12px;",
-    "    backdrop-filter: blur(1px);",
-    "    min-height: 125px;",
-    "    display: flex;",
-    "    flex-direction: column;",
-    "    justify-content: center;",
-    "    text-align: center;",
-    "}",
-    ".signal-triggered {",
-    "    background-color: rgba(35, 12, 16, 0.55) !important;",
-    "    border: 2px solid #f85149 !important;",
-    "    animation: pulse-alert 1s infinite alternate;",
-    "}",
-    "@keyframes pulse-alert { 0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); } 100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); } }",
-    ".money-journal {",
-    "    background-image: linear-gradient(rgba(2, 10, 5, 0.3), rgba(2, 10, 5, 0.6)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_neat_pile_of_crisp_US_dolla.jpg');",
-    "    background-position: center;",
-    "    background-size: cover;",
-    "    border-radius: 15px;",
-    "    padding: 26px 20px;",
-    "    text-align: center;",
-    "    margin-bottom: 18px;",
-    "    box-shadow: 0 10px 40px rgba(39, 174, 96, 0.4);",
-    "    border: 1px solid #1f7a43;",
-    "}",
-    ".money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; align-items: center; }",
-    "div.stButton > button { width: 100%; background: rgba(17, 24, 39, 0.85); color: #f0f6fc !important; border: 1px solid #374151 !important; border-radius: 10px; padding: 14px; font-size: 15px !important; font-weight: 900 !important; margin-bottom: 10px; }",
-    "div.stButton > button:hover { border-color: #00f3ff !important; color: #00f3ff !important; }",
-    "</style>"
-])
-st.markdown(css_styles, unsafe_allow_html=True)
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800;900&display=swap');
+#MainMenu {visibility: hidden !important; display: none !important;}
+header[data-testid='stHeader'] {visibility: hidden !important; display: none !important;}
+footer {visibility: hidden !important; display: none !important;}
+.viewerBadge_container__1QSob {display: none !important;}
+[data-testid='stAppViewBlockContainer'] {
+    padding-top: 0rem !important;
+    padding-bottom: 1.5rem !important;
+    padding-left: 0.4rem !important;
+    padding-right: 0.4rem !important;
+    margin-top: -65px !important;
+}
+iframe[height='0'] {display: none !important;}
+
+@keyframes app-heart-pulse {
+    0% { background-size: 230% auto; }
+    50% { background-size: 260% auto; }
+    100% { background-size: 230% auto; }
+}
+.stApp {
+    background-color: #040609;
+    background-image: linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.75)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_glowing_ruby_red_neon_heart.jpg');
+    background-attachment: fixed;
+    background-position: center 45%;
+    background-repeat: no-repeat;
+    animation: app-heart-pulse 3.5s infinite ease-in-out;
+    color: #f0f6fc;
+}
+
+.gold-btc-banner {
+    width: 100vw;
+    margin-left: calc(-50vw + 50%);
+    background-image: linear-gradient(rgba(4, 6, 9, 0.05), rgba(4, 6, 9, 0.45)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_luxurious_glowing_golden_Bi%20(1).jpg');
+    background-position: center center;
+    background-size: cover;
+    background-repeat: no-repeat;
+    height: 480px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    padding-bottom: 25px;
+    margin-bottom: 25px;
+    box-shadow: 0 15px 45px rgba(0, 0, 0, 0.85);
+    border-bottom: 2px solid rgba(247, 147, 26, 0.4);
+}
+
+.matrix-unified {
+    background-image: linear-gradient(rgba(4, 6, 9, 0.55), rgba(4, 6, 9, 0.88)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');
+    background-position: center top;
+    background-size: cover;
+    border: 1px solid #2dd4bf;
+    border-radius: 18px;
+    padding: 16px 8px 18px 8px;
+    text-align: center;
+    margin-bottom: 18px;
+    box-shadow: 0 8px 35px rgba(0, 243, 255, 0.2);
+}
+
+.matrix-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 1.55fr 1.05fr;
+    gap: 8px;
+}
+
+.thermo-card {
+    background-image: linear-gradient(rgba(4, 6, 9, 0.25), rgba(4, 6, 9, 0.65)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_vertical_futuristic_3D_cybernetic_glass_thermometer_gauge.jpg');
+    background-position: center center;
+    background-size: cover;
+    border: 1px solid rgba(0, 243, 255, 0.45);
+    border-radius: 14px;
+    padding: 10px 4px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 350px;
+    box-shadow: inset 0 0 22px rgba(0, 0, 0, 0.85), 0 0 15px rgba(0, 243, 255, 0.12);
+}
+
+.thermo-tube-wrap {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 175px;
+    margin: 6px 0;
+    gap: 5px;
+}
+
+.thermo-scale {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 8px;
+    font-weight: 800;
+    color: #cbd5e1;
+    text-align: right;
+    text-shadow: 0 1px 3px #000;
+}
+
+.thermo-glass {
+    width: 22px;
+    height: 100%;
+    background: rgba(4, 8, 15, 0.82);
+    border: 1.5px solid rgba(247, 147, 26, 0.65);
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: inset 0 0 10px rgba(0, 243, 255, 0.35), 0 0 10px rgba(247, 147, 26, 0.25);
+}
+
+.thermo-zero-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: #ffffff;
+    z-index: 4;
+    box-shadow: 0 0 6px #00f3ff;
+}
+
+@keyframes plasma-pump {
+    0% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }
+    50% { filter: brightness(1.45) drop-shadow(0 0 14px currentColor); }
+    100% { filter: brightness(1.0) drop-shadow(0 0 6px currentColor); }
+}
+
+.thermo-mercury-up {
+    position: absolute;
+    bottom: 50%;
+    left: 2px;
+    right: 2px;
+    background: linear-gradient(180deg, #00f3ff 0%, #3fb950 100%);
+    border-radius: 8px 8px 0 0;
+    color: #3fb950;
+    animation: plasma-pump 1.8s infinite ease-in-out;
+    z-index: 2;
+}
+
+.thermo-mercury-down {
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    right: 2px;
+    background: linear-gradient(180deg, #f85149 0%, #ff0055 100%);
+    border-radius: 0 0 8px 8px;
+    color: #f85149;
+    animation: plasma-pump 1.8s infinite ease-in-out;
+    z-index: 2;
+}
+
+.liq-bumper-box {
+    background-image: linear-gradient(rgba(4, 6, 9, 0.35), rgba(4, 6, 9, 0.72)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_futuristic_3D_horizontal_HUD_target_bumper_frame_on_a_pitc.jpg');
+    background-position: center center;
+    background-size: cover;
+    border: 1.5px solid rgba(247, 147, 26, 0.65);
+    border-radius: 13px;
+    padding: 10px 6px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.85), inset 0 0 14px rgba(0, 243, 255, 0.18);
+}
+
+.matrix-live-price {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 31px;
+    font-weight: 900;
+    color: #f0f6fc;
+    letter-spacing: 1px;
+    text-align: center;
+    padding: 10px 2px;
+    margin: 6px 0;
+    background: radial-gradient(circle, rgba(0, 243, 255, 0.14) 0%, rgba(4, 6, 9, 0.65) 80%);
+    border-top: 1px solid rgba(0, 243, 255, 0.35);
+    border-bottom: 1px solid rgba(0, 243, 255, 0.35);
+    border-radius: 10px;
+    text-shadow: 0 0 14px rgba(0, 243, 255, 0.65), 0 2px 6px rgba(0, 0, 0, 1);
+}
+
+.oi-center-box {
+    background: linear-gradient(180deg, rgba(10, 16, 28, 0.88), rgba(4, 6, 9, 0.95));
+    border: 1px solid rgba(0, 243, 255, 0.45);
+    border-radius: 12px;
+    padding: 8px 6px;
+    margin-top: 8px;
+    box-shadow: inset 0 0 12px rgba(0, 243, 255, 0.15);
+}
+
+.oi-bar-track {
+    width: 100%;
+    height: 10px;
+    background: rgba(4, 8, 15, 0.9);
+    border: 1px solid rgba(247, 147, 26, 0.5);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+    margin: 5px 0;
+}
+
+.setups-container {
+    background-image: linear-gradient(rgba(4, 6, 9, 0.75), rgba(4, 6, 9, 0.92)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/3D_rendering_of_falling_US_dollar_banknotes_frozen_in_mid-ai.jpg');
+    background-position: center bottom;
+    background-size: cover;
+    border: 1px solid #2dd4bf;
+    border-radius: 16px;
+    padding: 15px;
+    margin-bottom: 18px;
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.8);
+}
+
+.alert-box {
+    background: rgba(13, 19, 31, 0.35);
+    border: 1px solid rgba(31, 41, 55, 0.6);
+    padding: 14px;
+    border-radius: 15px;
+    margin-bottom: 12px;
+    backdrop-filter: blur(1px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    min-height: 125px;
+}
+
+.signal-triggered {
+    background-color: rgba(35, 12, 16, 0.55) !important;
+    border: 2px solid #f85149 !important;
+    animation: pulse-alert 1s infinite alternate;
+}
+
+@keyframes pulse-alert { 0% { box-shadow: 0 0 10px rgba(248, 81, 73, 0.4); } 100% { box-shadow: 0 0 30px rgba(248, 81, 73, 0.9); } }
+
+.money-journal {
+    background-image: linear-gradient(rgba(2, 10, 5, 0.3), rgba(2, 10, 5, 0.6)), url('https://raw.githubusercontent.com/PepinoDeM30/crypto-flow-terminal/main/A_highly_detailed_3D_render_of_a_neat_pile_of_crisp_US_dolla.jpg');
+    background-position: center;
+    background-size: cover;
+    border-radius: 15px;
+    padding: 26px 20px;
+    text-align: center;
+    margin-bottom: 18px;
+    box-shadow: 0 10px 40px rgba(39, 174, 96, 0.4);
+    border: 1px solid #1f7a43;
+}
+
+.money-content { position: relative; z-index: 2; display: flex; justify-content: space-around; align-items: center; }
+
+div.stButton > button { width: 100%; background: rgba(17, 24, 39, 0.85); color: #f0f6fc !important; border: 1px solid #374151 !important; border-radius: 10px; padding: 14px; font-size: 15px !important; font-weight: 900 !important; margin-bottom: 10px; }
+div.stButton > button:hover { border-color: #00f3ff !important; color: #00f3ff !important; }
+</style>
+""")
 
 def get_prague_now():
     try:
@@ -493,7 +507,7 @@ def get_prague_now():
 def check_liquid_hours():
     now_p = get_prague_now()
     if now_p.weekday() >= 5:
-        return False, f"⏸️ VÍKENDOVÝ REŽIM ({now_p.strftime('%H:%M')}) – Alarmy vypnuty"
+        return False, f"⏸️ VÍKENDOVÝ REŽIM ({now_p.strftime('%H:%M')})"
     
     mins = now_p.hour * 60 + now_p.minute
     in_asia = (2 * 60) <= mins < (5 * 60)
@@ -501,8 +515,8 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
     
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Nezávislá 1H ochrana S1/S2 | AI Agent ON"
-    return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Striktní 1M engine + Post Only (SL {SL_PCT*100:.2f}%)"
+    return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')})"
 
 @st.cache_data(ttl=30)
 def load_trading_data():
@@ -636,118 +650,122 @@ def compute_single_1m_delta(m_candle, is_spot=False):
         return 0.6 * real_1m + 0.4 * calc_1m
     return calc_1m
 
+def get_1m_extreme_ts(c_1m_list, start_ts, end_ts, is_high):
+    extreme_val = -1.0 if is_high else float('inf')
+    extreme_ts = start_ts
+    for m in c_1m_list:
+        t = int(m[0])
+        if start_ts <= t < end_ts:
+            val = float(m[2]) if is_high else float(m[3])
+            if is_high and val > extreme_val:
+                extreme_val, extreme_ts = val, t
+            elif not is_high and val < extreme_val:
+                extreme_val, extreme_ts = val, t
+    return extreme_ts
+
 def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, scale_factor=0.18):
     with ENGINE["lock"]:
         bucket_map = ENGINE["spot_buckets"] if is_spot else ENGINE["fut_buckets"]
         real_collected = bucket_map.get(candle_open_ts, 0.0)
+
     sub_delta = 0.0
     for m in candles_1m:
         try:
             m_ts = int(m[0])
             if candle_open_ts <= m_ts < candle_open_ts + 300000:
                 o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
-                if h <= l:
-                    continue
+                if h <= l: continue
                 vol_btc = float(m[5]) if is_spot else float(m[6])
                 body_pressure = (cl - o) / (h - l)
                 wick_pressure = (2.0 * cl - h - l) / (h - l)
                 combined_ratio = 0.60 * body_pressure + 0.40 * wick_pressure
                 sub_delta += vol_btc * combined_ratio * scale_factor
-        except Exception:
-            continue
+        except Exception: continue
+
     if abs(real_collected) > abs(sub_delta) * 0.65:
         return real_collected
     if abs(real_collected) > 0.0:
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
-def evaluate_setup1_1m_entry(direction, candles_1m_fut, candles_1m_spot, btc_price, upper_liq_p, lower_liq_p, setup_label):
-    plan = build_trade_plan(direction, btc_price, upper_liq_p, lower_liq_p, setup_label)
-    m_fut_asc = candles_1m_fut[:15][::-1] if len(candles_1m_fut) >= 15 else candles_1m_fut[::-1]
-    m_spot_asc = candles_1m_spot[:15][::-1] if len(candles_1m_spot) >= 15 else candles_1m_spot[::-1]
+def evaluate_setup1_1m_entry(direction, c1f, c1s, btc_price, upper_p, lower_p, setup_label):
+    mf = c1f[:15][::-1] if len(c1f) >= 15 else c1f[::-1]
+    ms = c1s[:15][::-1] if len(c1s) >= 15 else c1s[::-1]
+    
+    if len(mf) < 6:
+        pl = build_trade_plan(direction, btc_price, upper_p, lower_p, setup_label)
+        return False, f"⏳ 1M data...", pl
 
-    if len(m_fut_asc) < 6:
-        return False, f"Čekám na 1M data | Limit: {plan['entry']:.0f}$ | SL (0.25% Mkt): {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$", plan
+    n = min(len(mf), len(ms)) if len(ms) >= 6 else len(mf)
+    mf = mf[-n:]
+    ms = ms[-n:] if len(ms) >= n else mf
 
-    n_m = min(len(m_fut_asc), len(m_spot_asc)) if len(m_spot_asc) >= 6 else len(m_fut_asc)
-    m_fut_asc = m_fut_asc[-n_m:]
-    m_spot_asc = m_spot_asc[-n_m:] if len(m_spot_asc) >= n_m else m_fut_asc
+    cf, cs, rf, rs = [], [], 0.0, 0.0
+    o1, h1, l1, c1 = [], [], [], []
 
-    cum_f, cum_s = [], []
-    rf, rs = 0.0, 0.0
-    opens_1m, highs_1m, lows_1m, closes_1m = [], [], [], []
+    for i in range(n):
+        rf += compute_single_1m_delta(mf[i], is_spot=False)
+        rs += compute_single_1m_delta(ms[i], is_spot=True)
+        cf.append(rf)
+        cs.append(rs)
+        o1.append(float(mf[i][1]))
+        h1.append(float(mf[i][2]))
+        l1.append(float(mf[i][3]))
+        c1.append(float(mf[i][4]))
 
-    for idx in range(n_m):
-        df_val = compute_single_1m_delta(m_fut_asc[idx], is_spot=False)
-        ds_val = compute_single_1m_delta(m_spot_asc[idx], is_spot=True)
-        rf += df_val
-        rs += ds_val
-        cum_f.append(rf)
-        cum_s.append(rs)
-        opens_1m.append(float(m_fut_asc[idx][1]))
-        highs_1m.append(float(m_fut_asc[idx][2]))
-        lows_1m.append(float(m_fut_asc[idx][3]))
-        closes_1m.append(float(m_fut_asc[idx][4]))
+    c1[-1] = btc_price
+    h1[-1] = max(h1[-1], btc_price)
+    l1[-1] = min(l1[-1], btc_price)
 
-    closes_1m[-1] = btc_price
-    highs_1m[-1] = max(highs_1m[-1], btc_price)
-    lows_1m[-1] = min(lows_1m[-1], btc_price)
-
-    trigger_fired = False
-    trigger_desc = ""
+    trg = False
+    txt = ""
+    plan_entry = btc_price
 
     if direction == "SHORT":
-        hh_f_idx = max(range(1, n_m - 1), key=lambda k: cum_f[k])
-        prev_low_f = min(cum_f[:hh_f_idx + 1])
-        post_low_f = min(cum_f[hh_f_idx:])
-        ll_f_idx = hh_f_idx + cum_f[hh_f_idx:].index(post_low_f)
-        cvd_ll_ok = (hh_f_idx >= 1) and (post_low_f < prev_low_f or (cum_f[hh_f_idx] - post_low_f) >= 5.0)
+        # Striktní Lower Low na CVD bez jakýchkoliv zkratek (CVD musí propadnout pod lokální min.)
+        hh_idx = cf.index(max(cf))
+        prev_low = min(cf[:hh_idx+1]) if hh_idx > 0 else cf[hh_idx]
+        post_low = min(cf[hh_idx:])
+        strict_ll = post_low < prev_low
 
-        hh_s_idx = max(range(1, n_m - 1), key=lambda k: cum_s[k])
-        prev_low_s = min(cum_s[:hh_s_idx + 1])
-        post_low_s = min(cum_s[hh_s_idx:])
-        ll_s_idx = hh_s_idx + cum_s[hh_s_idx:].index(post_low_s)
-        spot_ll_ok = (hh_s_idx >= 1) and (post_low_s < prev_low_s or (cum_s[hh_s_idx] - post_low_s) >= 1.0)
-
-        if cvd_ll_ok or spot_ll_ok:
-            ref_ll_idx = ll_f_idx if cvd_ll_ok else ll_s_idx
-            flow_src = "1M CVD" if cvd_ll_ok else "1M SPOT"
-            min_p_at_ll = min(lows_1m[max(0, ref_ll_idx - 1):ref_ll_idx + 1])
-            pullback_up = (btc_price > min_p_at_ll + 4.0) or any(closes_1m[k] > opens_1m[k] for k in range(ref_ll_idx, n_m))
-            if pullback_up:
-                trigger_fired = True
-                trigger_desc = f"✅ LIMIT SHORT AKTIVOVÁN ({flow_src} 1. LL + PB) | Vstup: {plan['entry']:.0f}$ (1000$) | SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+        if strict_ll:
+            ll_idx = hh_idx + cf[hh_idx:].index(post_low)
+            p_low = min(l1[max(0, ll_idx-1):ll_idx+2])
+            lmt_p = p_low * (1.0 + PB_1M_PCT) # 0.12% Pullback nahoru
+            plan_entry = lmt_p
+            if btc_price >= lmt_p:
+                trg = True
+                txt = f"✅ LIMIT SHORT (Striktní 1M LL + PB {PB_1M_PCT*100:.2f}%) | Zóna: {lmt_p:.0f}$"
             else:
-                trigger_desc = f"⏳ {flow_src} udělalo 1. LL – čekám na pullback ceny pro Limit Short ({plan['entry']:.0f}$)"
+                txt = f"⏳ 1M LL potvrzeno. Čekám na Limit Short na {lmt_p:.0f}$"
         else:
-            trigger_desc = f"⏳ Detekce 1M: Hledám 1. LL po HH | Plán SL: {plan['sl_market']:.0f}$ | TP2 (Liq): {plan['tp2_limit_50pct']:.0f}$"
+            txt = "⏳ Detekce 1M: Čekám na striktní strukturu Lower Low."
     else:
-        ll_f_idx = min(range(1, n_m - 1), key=lambda k: cum_f[k])
-        prev_high_f = max(cum_f[:ll_f_idx + 1])
-        post_high_f = max(cum_f[ll_f_idx:])
-        hh_f_idx = ll_f_idx + cum_f[ll_f_idx:].index(post_high_f)
-        cvd_hh_ok = (ll_f_idx >= 1) and (post_high_f > prev_high_f or (post_high_f - cum_f[ll_f_idx]) >= 5.0)
+        # Striktní Higher High na CVD pro Long
+        ll_idx = cf.index(min(cf))
+        prev_high = max(cf[:ll_idx+1]) if ll_idx > 0 else cf[ll_idx]
+        post_high = max(cf[ll_idx:])
+        strict_hh = post_high > prev_high
 
-        ll_s_idx = min(range(1, n_m - 1), key=lambda k: cum_s[k])
-        prev_high_s = max(cum_s[:ll_s_idx + 1])
-        post_high_s = max(cum_s[ll_s_idx:])
-        hh_s_idx = ll_s_idx + cum_s[ll_s_idx:].index(post_high_s)
-        spot_hh_ok = (ll_s_idx >= 1) and (post_high_s > prev_high_s or (post_high_s - cum_s[ll_s_idx]) >= 1.0)
-
-        if cvd_hh_ok or spot_hh_ok:
-            ref_hh_idx = hh_f_idx if cvd_hh_ok else hh_s_idx
-            flow_src = "1M CVD" if cvd_hh_ok else "1M SPOT"
-            max_p_at_hh = max(highs_1m[max(0, ref_hh_idx - 1):ref_hh_idx + 1])
-            pullback_down = (btc_price < max_p_at_hh - 4.0) or any(closes_1m[k] < opens_1m[k] for k in range(ref_hh_idx, n_m))
-            if pullback_down:
-                trigger_fired = True
-                trigger_desc = f"✅ LIMIT LONG AKTIVOVÁN ({flow_src} 1. HH + PB) | Vstup: {plan['entry']:.0f}$ (1000$) | SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+        if strict_hh:
+            hh_idx = ll_idx + cf[ll_idx:].index(post_high)
+            p_high = max(h1[max(0, hh_idx-1):hh_idx+2])
+            lmt_p = p_high * (1.0 - PB_1M_PCT) # 0.12% Pullback dolu
+            plan_entry = lmt_p
+            if btc_price <= lmt_p:
+                trg = True
+                txt = f"✅ LIMIT LONG (Striktní 1M HH + PB {PB_1M_PCT*100:.2f}%) | Zóna: {lmt_p:.0f}$"
             else:
-                trigger_desc = f"⏳ {flow_src} udělalo 1. HH – čekám na pullback ceny pro Limit Long ({plan['entry']:.0f}$)"
+                txt = f"⏳ 1M HH potvrzeno. Čekám na Limit Long na {lmt_p:.0f}$"
         else:
-            trigger_desc = f"⏳ Detekce 1M: Hledám 1. HH po LL | Plán SL: {plan['sl_market']:.0f}$ | TP2 (Liq): {plan['tp2_limit_50pct']:.0f}$"
+            txt = "⏳ Detekce 1M: Čekám na striktní strukturu Higher High."
 
-    return trigger_fired, trigger_desc, plan
+    pl = build_trade_plan(direction, plan_entry, upper_p, lower_p, setup_label)
+    pl["trigger_ready"] = trg
+    if trg:
+        txt += f" | SL (Market): {pl['sl_market']:.0f}$ | TP2 (Liq): {pl['tp2_limit_50pct']:.0f}$"
+    
+    return trg, txt, pl
 
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     curr_5m_candle = (int(time.time() * 1000) // 300000) * 300000
@@ -762,14 +780,9 @@ def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     max_up = btc_price * 1.020
     min_down = btc_price * 0.980
     max_down = btc_price * 0.998
-
-    short_clusters = {}
-    long_clusters = {}
-
-    recent_desc = c_300[:144] if len(c_300) >= 144 else c_300
-    recent_asc = recent_desc[::-1]
+    short_clusters, long_clusters = {}, {}
+    recent_asc = (c_300[:144] if len(c_300) >= 144 else c_300)[::-1]
     n_c = len(recent_asc)
-
     highs_asc = [float(c[2]) for c in recent_asc]
     lows_asc = [float(c[3]) for c in recent_asc]
 
@@ -778,213 +791,125 @@ def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
             c_ts = int(c[0])
             o, h, l, cl = float(c[1]), float(c[2]), float(c[3]), float(c[4])
             vol_btc = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
-            oi_ch = oi_change_map.get(c_ts, 0.0)
-
-            pos_weight = max(oi_ch, 0.0) * 1.6 + (vol_btc * 0.14)
-            if pos_weight <= 0:
-                continue
-
+            pw = max(oi_change_map.get(c_ts, 0.0), 0.0) * 1.6 + (vol_btc * 0.14)
+            if pw <= 0: continue
             max_h_after = max(highs_asc[idx + 1:]) if (idx + 1) < n_c else h
             min_l_after = min(lows_asc[idx + 1:]) if (idx + 1) < n_c else l
 
-            for lev_mult, share in [(1.0085, 0.40), (1.0125, 0.35), (1.0175, 0.25)]:
-                liq_s = round((h * lev_mult) / 25.0) * 25.0
-                if liq_s > max_h_after and min_up <= liq_s <= max_up:
-                    short_clusters[liq_s] = short_clusters.get(liq_s, 0.0) + (pos_weight * share)
+            for m, s in [(1.0085, 0.40), (1.0125, 0.35), (1.0175, 0.25)]:
+                lp = round(h * m / 25.0) * 25.0
+                if lp > max_h_after and min_up <= lp <= max_up: short_clusters[lp] = short_clusters.get(lp, 0.0) + pw * s
+            for m, s in [(0.9915, 0.40), (0.9875, 0.35), (0.9825, 0.25)]:
+                lp = round(l * m / 25.0) * 25.0
+                if lp < min_l_after and min_down <= lp <= max_down: long_clusters[lp] = long_clusters.get(lp, 0.0) + pw * s
+        except Exception: continue
 
-            for lev_mult, share in [(0.9915, 0.40), (0.9875, 0.35), (0.9825, 0.25)]:
-                liq_l = round((l * lev_mult) / 25.0) * 25.0
-                if liq_l < min_l_after and min_down <= liq_l <= max_down:
-                    long_clusters[liq_l] = long_clusters.get(liq_l, 0.0) + (pos_weight * share)
-        except Exception:
-            continue
-
-    if short_clusters:
-        upper_p = max(short_clusters, key=short_clusters.get)
-        upper_btc = short_clusters[upper_p]
-    else:
-        upper_p = round((btc_price * 1.012) / 25.0) * 25.0
-        upper_btc = 85.0
-
-    if long_clusters:
-        lower_p = max(long_clusters, key=long_clusters.get)
-        lower_btc = long_clusters[lower_p]
-    else:
-        lower_p = round((btc_price * 0.988) / 25.0) * 25.0
-        lower_btc = 92.0
+    upper_p = max(short_clusters, key=short_clusters.get) if short_clusters else round(btc_price * 1.012 / 25.0) * 25.0
+    upper_btc = short_clusters[upper_p] if short_clusters else 85.0
+    lower_p = max(long_clusters, key=long_clusters.get) if long_clusters else round(btc_price * 0.988 / 25.0) * 25.0
+    lower_btc = long_clusters[lower_p] if long_clusters else 92.0
 
     with ENGINE["lock"]:
-        ENGINE["liq_cache"] = {
-            "candle_ts": curr_5m_candle,
-            "upper_p": upper_p,
-            "upper_btc": upper_btc,
-            "lower_p": lower_p,
-            "lower_btc": lower_btc
-        }
-
+        ENGINE["liq_cache"] = {"candle_ts": curr_5m_candle, "upper_p": upper_p, "upper_btc": upper_btc, "lower_p": lower_p, "lower_btc": lower_btc}
     return upper_p, upper_btc, lower_p, lower_btc
 
-def compute_1h_volume_profile(candles_1m_vp, c_12_asc):
-    source_candles = candles_1m_vp[:60] if len(candles_1m_vp) >= 30 else c_12_asc
-    if not source_candles:
-        return 0.0, 0.0, 0.0
-
-    lows = [float(c[3]) for c in source_candles]
-    highs = [float(c[2]) for c in source_candles]
-    min_p, max_p = min(lows), max(highs)
-    if max_p <= min_p:
-        return min_p, max_p, min_p
-
-    num_bins = 24
-    bin_size = (max_p - min_p) / num_bins
-    bins = [0.0] * num_bins
-    bin_centers = [min_p + (i + 0.5) * bin_size for i in range(num_bins)]
-
-    for c in source_candles:
+def compute_1h_volume_profile(c_12_asc):
+    if not c_12_asc: return 0.0, 0.0, 0.0
+    mn, mx = min(float(c[3]) for c in c_12_asc), max(float(c[2]) for c in c_12_asc)
+    if mx <= mn: return mn, mx, mn
+    bs = (mx - mn) / 24.0
+    bins = [0.0] * 24
+    bc = [mn + (i + 0.5) * bs for i in range(24)]
+    
+    for c in c_12_asc:
         h, l = float(c[2]), float(c[3])
-        vol = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
-        if vol <= 0:
-            vol = 1.0
-        start_b = max(0, min(num_bins - 1, int((l - min_p) / bin_size)))
-        end_b = max(0, min(num_bins - 1, int((h - min_p) / bin_size)))
-        span = (end_b - start_b) + 1
-        vol_per_bin = vol / span
-        for b_idx in range(start_b, end_b + 1):
-            bins[b_idx] += vol_per_bin
-
-    total_vol = sum(bins)
-    if total_vol <= 0:
-        return bin_centers[num_bins // 2], max_p, min_p
-
-    poc_idx = max(range(num_bins), key=lambda i: bins[i])
-    poc_price = bin_centers[poc_idx]
-
-    target_vol = total_vol * 0.70
-    curr_vol = bins[poc_idx]
-    low_idx, high_idx = poc_idx, poc_idx
-
-    while curr_vol < target_vol and (low_idx > 0 or high_idx < num_bins - 1):
-        up_vol = bins[high_idx + 1] if high_idx < num_bins - 1 else -1.0
-        down_vol = bins[low_idx - 1] if low_idx > 0 else -1.0
-        if up_vol >= down_vol:
-            high_idx += 1
-            curr_vol += bins[high_idx]
+        v = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
+        v = max(v, 1.0)
+        sb = max(0, min(23, int((l - mn) / bs)))
+        eb = max(0, min(23, int((h - mn) / bs)))
+        for b_idx in range(sb, eb + 1):
+            bins[b_idx] += v / (eb - sb + 1)
+            
+    tv = sum(bins)
+    if tv <= 0: return bc[12], mx, mn
+    pi = max(range(24), key=lambda i: bins[i])
+    cv = bins[pi]
+    tgt = tv * 0.70
+    li = hi = pi
+    while cv < tgt and (li > 0 or hi < 23):
+        u_v = bins[hi + 1] if hi < 23 else -1.0
+        d_v = bins[li - 1] if li > 0 else -1.0
+        if u_v >= d_v:
+            hi += 1
+            cv += bins[hi]
         else:
-            low_idx -= 1
-            curr_vol += bins[low_idx]
-
-    vah_price = bin_centers[high_idx] + (bin_size * 0.5)
-    val_price = bin_centers[low_idx] - (bin_size * 0.5)
-    return poc_price, vah_price, val_price
+            li -= 1
+            cv += bins[li]
+    return bc[pi], bc[hi] + bs * 0.5, bc[li] - bs * 0.5
 
 def fetch_okx_data():
     poll_realtime_okx_flow()
     ts = int(time.time() * 1000)
     try:
-        candles_300 = get_okx_candles("5m", 300, ts, ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP"])
-        fallback_p = float(candles_300[0][4]) if candles_300 else 75000.0
-        btc_price = get_live_xperp_price(fallback_p, ts)
-        candles_1h = get_okx_candles("1H", 72, ts, ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP"])
+        c_300 = get_okx_candles("5m", 300, ts)
+        btc_p = get_live_xperp_price(float(c_300[0][4]) if c_300 else 75000.0, ts)
+        c_1h = get_okx_candles("1H", 72, ts)
         
-        c_12_desc = [list(c) for c in candles_300[0:12]] if len(candles_300) >= 12 else [list(c) for c in candles_300]
-        if c_12_desc:
-            c_12_desc[0][4] = str(btc_price)
-            if btc_price > float(c_12_desc[0][2]):
-                c_12_desc[0][2] = str(btc_price)
-            if btc_price < float(c_12_desc[0][3]):
-                c_12_desc[0][3] = str(btc_price)
+        c_12 = [list(c) for c in c_300[:12]][::-1] if len(c_300) >= 12 else [list(c) for c in c_300][::-1]
+        if c_12:
+            c_12[-1][4] = str(btc_p)
+            c_12[-1][2] = str(max(float(c_12[-1][2]), btc_p))
+            c_12[-1][3] = str(min(float(c_12[-1][3]), btc_p))
 
-        c_12_asc = c_12_desc[::-1]
-        candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
+        cmap = {int(c[0]): float(c[4]) for c in c_300}
+        f_r = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
+        s_r = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
+        
+        fm, sm = {}, {}
+        for r in f_r:
+            t_open = int(r[0]) - 300000
+            p = cmap.get(t_open, btc_p)
+            if p > 0: fm[t_open] = (float(r[2]) - float(r[1])) / p
+        for r in s_r:
+            sm[int(r[0]) - 300000] = float(r[2]) - float(r[1])
 
-        vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
-        fut_map = {}
-        for row in vol_res:
-            try:
-                open_ts = int(row[0]) - 300000 
-                sell_usd, buy_usd = float(row[1]), float(row[2])
-                ref_p = candle_close_map.get(open_ts, btc_price)
-                fut_map[open_ts] = (buy_usd - sell_usd) / ref_p if ref_p > 0 else 0.0
-            except Exception:
-                continue
+        c1f = get_okx_candles("1m", 120, ts)
+        c1s = get_okx_candles("1m", 120, ts, ["BTC-USDT"])
 
-        spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
-        spot_map = {}
-        for row in spot_res:
-            try:
-                open_ts = int(row[0]) - 300000
-                spot_map[open_ts] = float(row[2]) - float(row[1])
-            except Exception:
-                continue
+        cv12, sc12 = [], []
+        for c in c_12:
+            t = int(c[0])
+            is_live = (t == int(c_12[-1][0]))
+            cv12.append(fm[t] if t in fm and not is_live else get_1m_real_or_calibrated_delta(c1f, t, False, 0.18))
+            sc12.append(sm[t] if t in sm and not is_live else get_1m_real_or_calibrated_delta(c1s, t, True, 0.16))
 
-        candles_1m_fut = get_okx_candles("1m", 65, ts, ["BTC-USDT-SWAP", "BTC-USD_UM_XPERP-310404"])
-        candles_1m_spot = get_okx_candles("1m", 30, ts, ["BTC-USDT"])
-
-        cvd_12, scvd_12 = [], []
-        live_open_ts = int(c_12_asc[-1][0]) if c_12_asc else 0
-
-        for idx, c in enumerate(c_12_asc):
-            open_ts = int(c[0])
-            is_live_candle = (open_ts == live_open_ts)
-
-            if not is_live_candle and open_ts in fut_map:
-                cvd_12.append(fut_map[open_ts])
-            else:
-                val_f = get_1m_real_or_calibrated_delta(candles_1m_fut, open_ts, is_spot=False, scale_factor=0.18)
-                fut_map[open_ts] = val_f
-                cvd_12.append(val_f)
-
-            if not is_live_candle and open_ts in spot_map:
-                scvd_12.append(spot_map[open_ts])
-            else:
-                val_s = get_1m_real_or_calibrated_delta(candles_1m_spot, open_ts, is_spot=True, scale_factor=0.16)
-                spot_map[open_ts] = val_s
-                scvd_12.append(val_s)
-
-        oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
-        oi_change_map = {}
-        if len(oi_res) >= 2:
-            for idx in range(len(oi_res) - 1):
-                try:
-                    ts_curr, val_curr = int(oi_res[idx][0]), float(oi_res[idx][1])
-                    ts_prev, val_prev = int(oi_res[idx + 1][0]), float(oi_res[idx + 1][1])
-                    open_curr = ts_curr - 300000
-                    open_prev = ts_prev - 300000
-                    p_curr = candle_close_map.get(open_curr, btc_price)
-                    p_prev = candle_close_map.get(open_prev, btc_price)
-                    if p_curr > 0 and p_prev > 0 and val_curr > 0 and val_prev > 0:
-                        oi_change_map[open_curr] = (val_curr / p_curr) - (val_prev / p_prev)
-                except Exception:
-                    continue
+        o_r = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
+        om = {}
+        if len(o_r) >= 2:
+            for i in range(len(o_r) - 1):
+                cur_t, prev_t = int(o_r[i][0]) - 300000, int(o_r[i+1][0]) - 300000
+                cp, pp = cmap.get(cur_t, btc_p), cmap.get(prev_t, btc_p)
+                if cp > 0 and pp > 0:
+                    om[cur_t] = (float(o_r[i][1]) / cp) - (float(o_r[i+1][1]) / pp)
 
         with ENGINE["lock"]:
-            for k_ts, v_oi in ENGINE["oi_live_delta"].items():
-                if k_ts not in oi_change_map or k_ts == live_open_ts:
-                    oi_change_map[k_ts] = v_oi
+            for k, v in ENGINE["oi_live_delta"].items():
+                if k not in om or k == int(c_12[-1][0]): om[k] = v
 
-        oi_12 = [oi_change_map.get(int(c[0]), 0.0) for c in c_12_asc]
-
-        vp_data = compute_1h_volume_profile(candles_1m_fut, c_12_asc)
-        liq_data = compute_liquidation_magnets(candles_300, oi_change_map, btc_price)
+        vp_data = compute_1h_volume_profile(c_12)
+        liq_data = compute_liquidation_magnets(c_300, om, btc_p)
         
-        cvd_1 = sum(cvd_12[-1:]) if len(cvd_12) >= 1 else 0.0
-        cvd_5 = sum(cvd_12[-5:]) if len(cvd_12) >= 5 else 0.0
-        cvd_9 = sum(cvd_12[-9:]) if len(cvd_12) >= 9 else 0.0
+        o12 = [om.get(int(c[0]), 0.0) for c in c_12]
 
-        scvd_1 = sum(scvd_12[-1:]) if len(scvd_12) >= 1 else 0.0
-        scvd_5 = sum(scvd_12[-5:]) if len(scvd_12) >= 5 else 0.0
-        scvd_9 = sum(scvd_12[-9:]) if len(scvd_12) >= 9 else 0.0
-        
-        oi_1 = sum(oi_12[-1:]) if len(oi_12) >= 1 else 0.0
-        oi_5 = sum(oi_12[-5:]) if len(oi_12) >= 5 else 0.0
-        oi_9 = sum(oi_12[-9:]) if len(oi_12) >= 9 else 0.0
-
-        return (cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9,
-                cvd_12, scvd_12, c_12_asc, candles_300, candles_1h, fut_map, spot_map, oi_change_map,
-                btc_price, vp_data, liq_data, candles_1m_fut, candles_1m_spot)
+        return (
+            sum(cv12[-1:]), sum(cv12[-5:]), sum(cv12[-9:]),
+            sum(sc12[-1:]), sum(sc12[-5:]), sum(sc12[-9:]),
+            sum(o12[-1:]), sum(o12[-5:]), sum(o12[-9:]),
+            cv12, sc12, c_12, c_300, c_1h, fm, sm, om,
+            btc_p, vp_data, liq_data, c1f, c1s
+        )
     except Exception:
-        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
+        return (0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
 # --- SETUP 1 ---
 def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p):
@@ -999,96 +924,90 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
         highs = [float(c[2]) for c in c_12_asc]
         lows = [float(c[3]) for c in c_12_asc]
         closes = [float(c[4]) for c in c_12_asc]
+        timestamps = [int(c[0]) for c in c_12_asc]
+
+        # Sestavení 1M CVD pole pro exaktní odečty
+        start_ts = timestamps[0]
+        cum_f_1m, cum_s_1m = {}, {}
+        rc, rs = 0.0, 0.0
+        for m in candles_1m_fut[::-1]:
+            t = int(m[0])
+            if t >= start_ts:
+                rc += compute_single_1m_delta(m, is_spot=False)
+                cum_f_1m[t] = rc
+        for m in candles_1m_spot[::-1]:
+            t = int(m[0])
+            if t >= start_ts:
+                rs += compute_single_1m_delta(m, is_spot=True)
+                cum_s_1m[t] = rs
         
         max_all_h = max(highs)
         min_all_l = min(lows)
-
-        cum_c, cum_s = [], []
-        cc, cs = 0.0, 0.0
-        for i in range(12):
-            cc += cvd_12[i]
-            cs += scvd_12[i]
-            cum_c.append(cc)
-            cum_s.append(cs)
-
         prefix = "" if liquid_ok else "⏸️ "
 
-        for i in range(0, 9):
-            # A) BEARISH EQUAL HIGHS
-            h_init = highs[i]
-            if h_init >= max_all_h * (1.0 - 0.0010):
-                pullback_done = False
-                min_pb_low = h_init
+        # 1. BEARISH EQUAL HIGHS (Pravidlo 13:09, striktní oddělené retesty, přesné CVD)
+        if max_all_h > 0:
+            first_touch_idx = next((k for k in range(12) if highs[k] >= max_all_h * (1.0 - 0.0010)), -1)
+            if first_touch_idx != -1 and (highs[-1] >= max_all_h * (1.0 - 0.0010) or highs[-2] >= max_all_h * (1.0 - 0.0010)):
                 retest_indices = []
-                invalid_break = False
-
-                for k in range(i + 1, 12):
-                    if highs[k] > h_init * (1.0 + 0.0010):
-                        invalid_break = True
-                        break
-                    if lows[k] < min_pb_low:
-                        min_pb_low = lows[k]
-                    if (h_init - min_pb_low) >= (h_init * 0.0018):
-                        pullback_done = True
-                    if pullback_done and abs(highs[k] - h_init) <= (h_init * 0.0010):
+                is_outside = False
+                for k in range(first_touch_idx + 1, 12):
+                    if highs[k] < max_all_h * (1.0 - 0.0010):
+                        is_outside = True
+                    elif is_outside and highs[k] >= max_all_h * (1.0 - 0.0010):
                         retest_indices.append(k)
-
-                if not invalid_break and len(retest_indices) >= 2:
-                    all_retest_wicks = [h_init] + [highs[r] for r in retest_indices]
-                    if (max(all_retest_wicks) - min(all_retest_wicks)) <= (h_init * 0.0010):
-                        j = retest_indices[-1]
-                        c_diff = cum_c[j] - cum_c[i]
-                        s_diff = cum_s[j] - cum_s[i]
-
-                        valid_bear = (c_diff > 50.0) or (s_diff > 10.0 and c_diff >= -10.0)
-                        if valid_bear:
-                            pb_pct = ((h_init - min_pb_low) / h_init) * 100.0
-                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQUAL HIGHS")
-                            msg = f"{prefix}🔥 BEARISH EQUAL HIGHS ({len(retest_indices)}x retest do 0.10% | PB {pb_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
+                        is_outside = False
+                
+                if len(retest_indices) >= 2: # Min. 2 retesty (3 doteky celkem)
+                    min_pb = min(lows[first_touch_idx:retest_indices[-1] + 1])
+                    if (max_all_h - min_pb) >= max_all_h * 0.0018:
+                        tm_first = get_1m_extreme_ts(candles_1m_fut, timestamps[first_touch_idx], timestamps[first_touch_idx] + 300000, is_high=True)
+                        tm_last = get_1m_extreme_ts(candles_1m_fut, timestamps[retest_indices[-1]], timestamps[retest_indices[-1]] + 300000, is_high=True)
+                        c_diff = cum_f_1m.get(tm_last, 0.0) - cum_f_1m.get(tm_first, 0.0)
+                        s_diff = cum_s_1m.get(tm_last, 0.0) - cum_s_1m.get(tm_first, 0.0)
+                        
+                        if c_diff > 50.0 or (s_diff > 10.0 and c_diff >= -10.0):
+                            pb_pct = ((max_all_h - min_pb) / max_all_h) * 100.0
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQH")
+                            msg = f"{prefix}🔥 BEARISH EQUAL HIGHS (Exaktní 1M CVD {c_diff:+.1f} / Spot {s_diff:+.1f} | PB {pb_pct:.2f}%)\n{entry_txt}"
                             if liquid_ok and entry_ok:
                                 agent_msg = execute_okx_agent_trade(t_payload)
                                 msg += f"\n{agent_msg}"
                                 odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY", msg, lock_duration=3600)
                             return msg, bool(liquid_ok and entry_ok)
 
-            # B) BULLISH EQUAL LOWS
-            l_init = lows[i]
-            if l_init <= min_all_l * (1.0 + 0.0010):
-                bounce_done = False
-                max_b_high = l_init
-                retest_l_indices = []
-                invalid_drop = False
+        # 2. BULLISH EQUAL LOWS
+        if min_all_l > 0:
+            first_touch_idx = next((k for k in range(12) if lows[k] <= min_all_l * (1.0 + 0.0010)), -1)
+            if first_touch_idx != -1 and (lows[-1] <= min_all_l * (1.0 + 0.0010) or lows[-2] <= min_all_l * (1.0 + 0.0010)):
+                retest_indices = []
+                is_outside = False
+                for k in range(first_touch_idx + 1, 12):
+                    if lows[k] > min_all_l * (1.0 + 0.0010):
+                        is_outside = True
+                    elif is_outside and lows[k] <= min_all_l * (1.0 + 0.0010):
+                        retest_indices.append(k)
+                        is_outside = False
+                
+                if len(retest_indices) >= 2:
+                    max_pb = max(highs[first_touch_idx:retest_indices[-1] + 1])
+                    if (max_pb - min_all_l) >= min_all_l * 0.0018:
+                        tm_first = get_1m_extreme_ts(candles_1m_fut, timestamps[first_touch_idx], timestamps[first_touch_idx] + 300000, is_high=False)
+                        tm_last = get_1m_extreme_ts(candles_1m_fut, timestamps[retest_indices[-1]], timestamps[retest_indices[-1]] + 300000, is_high=False)
+                        c_diff = cum_f_1m.get(tm_last, 0.0) - cum_f_1m.get(tm_first, 0.0)
+                        s_diff = cum_s_1m.get(tm_last, 0.0) - cum_s_1m.get(tm_first, 0.0)
 
-                for k in range(i + 1, 12):
-                    if lows[k] < l_init * (1.0 - 0.0010):
-                        invalid_drop = True
-                        break
-                    if highs[k] > max_b_high:
-                        max_b_high = highs[k]
-                    if (max_b_high - l_init) >= (l_init * 0.0018):
-                        bounce_done = True
-                    if bounce_done and abs(lows[k] - l_init) <= (l_init * 0.0010):
-                        retest_l_indices.append(k)
-
-                if not invalid_drop and len(retest_l_indices) >= 2:
-                    all_retest_lows = [l_init] + [lows[r] for r in retest_l_indices]
-                    if (max(all_retest_lows) - min(all_retest_lows)) <= (l_init * 0.0010):
-                        j = retest_l_indices[-1]
-                        c_diff = cum_c[j] - cum_c[i]
-                        s_diff = cum_s[j] - cum_s[i]
-
-                        valid_bull = (c_diff < -50.0) or (s_diff < -10.0 and c_diff <= 10.0)
-                        if valid_bull:
-                            b_pct = ((max_b_high - l_init) / l_init) * 100.0
-                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQUAL LOWS")
-                            msg = f"{prefix}🔥 BULLISH EQUAL LOWS ({len(retest_l_indices)}x retest do 0.10% | PB {b_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
+                        if c_diff < -50.0 or (s_diff < -10.0 and c_diff <= 10.0):
+                            pb_pct = ((max_pb - min_all_l) / min_all_l) * 100.0
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQL")
+                            msg = f"{prefix}🔥 BULLISH EQUAL LOWS (Exaktní 1M CVD {c_diff:+.1f} / Spot {s_diff:+.1f} | PB {pb_pct:.2f}%)\n{entry_txt}"
                             if liquid_ok and entry_ok:
                                 agent_msg = execute_okx_agent_trade(t_payload)
                                 msg += f"\n{agent_msg}"
                                 odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY", msg, lock_duration=3600)
                             return msg, bool(liquid_ok and entry_ok)
 
-        # 2) ÚZKÝ RANGE
+        # 3. ÚZKÝ RANGE (Min. 5 svíček, Knot-Knot <= 0.15 %)
         for win in range(5, 13):
             sub_h = highs[-win:]
             sub_l = lows[-win:]
@@ -1099,7 +1018,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
 
-                if (c_sum > 50.0) or (s_sum > 10.0 and c_sum >= -10.0):
+                if c_sum > 50.0 or (s_sum > 10.0 and c_sum >= -10.0):
                     entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH ÚZKÝ RANGE")
                     msg = f"{prefix}🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
                     if liquid_ok and entry_ok:
@@ -1108,7 +1027,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                         odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (RANGE)", msg, lock_duration=3600)
                     return msg, bool(liquid_ok and entry_ok)
 
-                if (c_sum < -50.0) or (s_sum < -10.0 and c_sum <= 10.0):
+                if c_sum < -50.0 or (s_sum < -10.0 and c_sum <= 10.0):
                     entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH ÚZKÝ RANGE")
                     msg = f"{prefix}🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
                     if liquid_ok and entry_ok:
@@ -1117,11 +1036,11 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                         odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (RANGE)", msg, lock_duration=3600)
                     return msg, bool(liquid_ok and entry_ok)
 
-        return "Skenuji Setup 1 (EQH/L: 2x retest ≤0.10%, PB ≥0.18%, CVD>50/Spot>10 | Range: min. 5 sv. knot-knot ≤0.15%)...", False
+        return "Skenuji Setup 1 (EQH/L exaktní 1M CVD pivoty, PB ≥0.18%, 13:09 filter | Range ≤0.15%)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
-# --- SETUP 2 ---
+# --- SETUP 2 (Beze změny limitů z tvého zadání, SFP retest) ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p):
     try:
         rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
@@ -1131,11 +1050,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         if len(candles_300) < 20 or len(candles_1h) < 10:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
-        try:
-            tz_p = ZoneInfo("Europe/Prague")
-        except Exception:
-            tz_p = timezone(timedelta(hours=1))
-
+        tz_p = ZoneInfo("Europe/Prague")
         now_prague = datetime.now(tz_p)
         yesterday_date = now_prague.date() - timedelta(days=1)
         current_date = now_prague.date()
@@ -1147,12 +1062,11 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 pdh, pdl = max(pdh, float(c[2])), min(pdl, float(c[3]))
         if pdh == 0.0: pdh, pdl = 0.0, 0.0
 
-        all_5m_asc = candles_300[::-1]
         today_candles = []
         asia_h, asia_l = 0.0, float("inf")
         lon_h, lon_l = 0.0, float("inf")
 
-        for c in all_5m_asc:
+        for c in candles_300[::-1]:
             ts_c = int(c[0])
             dt = datetime.fromtimestamp(ts_c / 1000, tz_p)
             if dt.date() != current_date: continue
@@ -1185,8 +1099,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
 
             ts_sweep = today_candles[sweep_idx][0]
             primary_extremum = today_candles[sweep_idx][2] if is_high else today_candles[sweep_idx][3]
-            limit_entry_p = primary_extremum * (1.0 - 0.0005) if is_high else primary_extremum * (1.0 + 0.0005)
-
+            limit_entry_p = val * (1.0 - S2_LIMIT_PCT) if is_high else val * (1.0 + S2_LIMIT_PCT)
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
@@ -1210,7 +1123,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             direction = "SHORT" if is_high else "LONG"
                             t_payload = build_trade_plan(direction, limit_entry_p, upper_p, lower_p, f"SETUP 2: SFP {name} {direction}")
                             t_payload["trigger_ready"] = True
-                            entry_txt = f"✅ LIMIT {direction} (0.05% z Topu): {limit_entry_p:.0f}$ (1000$) | SL Mkt: {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
+                            entry_txt = f"✅ LIMIT {'SHORT' if is_h else 'LONG'} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL Mkt: {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
                             msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
                             if liquid_ok:
                                 agent_msg = execute_okx_agent_trade(t_payload)
@@ -1381,10 +1294,10 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[poc_1h, poc_1h], mode="lines", line=dict(color="#f7931a", width=2.2), hoverinfo="skip", showlegend=False), row=1, col=1)
         fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[val_1h, val_1h], mode="lines", line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"), hoverinfo="skip", showlegend=False), row=1, col=1)
 
-    fig.add_trace(go.Candlestick(x=x_axis, open=[float(c[1]) for c in c_12_asc], high=[float(c[2]) for c in c_12_asc], low=[float(c[3]) for c in c_12_asc], close=[float(c[4]) for c in c_12_asc], increasing_line_color="#3fb950", decreasing_line_color="#f85149", increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149", increasing_line_width=1.8, decreasing_line_width=1.8, whiskerwidth=0.3, showlegend=False), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=x_axis, open=[float(c[1]) for c in c_12_asc], high=[float(c[2]) for c in c_12_asc], low=[float(c[3]) for c in c_12_asc], close=[float(c[4]) for c_12_asc], increasing_line_color="#3fb950", decreasing_line_color="#f85149", increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149", increasing_line_width=1.8, decreasing_line_width=1.8, whiskerwidth=0.3, showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=[-0.8, 13.6], y=[b_price, b_price], mode="lines", line=dict(color="rgba(0, 243, 255, 0.55)", width=1.4, dash="dot"), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=[11.0], y=[b_price], mode="markers", marker=dict(color="#00f3ff", size=7, line=dict(color="#ffffff", width=1.5)), hoverinfo="skip", showlegend=False), row=1, col=1)
-    fig.add_annotation(x=1.0, y=b_price, xref="paper", yref="y", text=f"<b>LIVE {b_price:.0f}</b>", showarrow=False, xanchor="right", yanchor="middle", font=dict(family="Orbitron, sans-serif", size=11, color="#00f3ff"), bgcolor="rgba(4, 6, 9, 0.95)", bordercolor="#00f3ff", borderwidth=1.5, borderpad=4)
+    
     fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode="lines+markers", marker=dict(size=[0]*11 + [6], color="#00f3ff"), line=dict(color="#00f3ff", width=3, shape="spline", smoothing=1.1), showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode="lines+markers", marker=dict(size=[0]*11 + [6], color="#f1e05a"), line=dict(color="#f1e05a", width=3, shape="spline", smoothing=1.1), showlegend=False), row=3, col=1)
 
@@ -1412,12 +1325,12 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (1H ZÁMEK)</div>',
-    f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1: ABSORPCE (EXAKTNÍ 1M CVD | STRICT 1M ENGINE)</div>',
+    f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP RETEST (1H ZÁMEK)</div>',
-    f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: MACRO SFP (LIMIT 0.05% | SL 0.30% | POST-ONLY)</div>',
+    f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2.replace(chr(10), "<br>")}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
     '</div>'
@@ -1448,12 +1361,12 @@ if st.button("📲 OTESTOVAT TELEGRAM & AI AGENTA"):
     test_msg = execute_okx_agent_trade(test_plan)
     ok = odesli_upozorneni(
         "TEST_PING",
-        "TEST SPOJENÍ OKX TERMINÁL + AI AGENT",
-        f"✅ Spojení funguje! Live BTC: {b_price:.0f}$\n\n{test_msg}",
+        "TEST SPOJENÍ TERMINÁL + AI AGENT",
+        f"✅ Vše běží v Post-Only režimu na 1M exaktní křivce!\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
         force=True
     )
     if ok:
-        st.success("Testovací zpráva byla odeslána na tvůj Telegram!")
+        st.success("Zpráva odeslána!")
     else:
         st.error("Odeslání selhalo.")
 
