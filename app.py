@@ -17,21 +17,22 @@ from plotly.subplots import make_subplots
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
 
-# --- PŘÍPRAVA PRO NAPOJENÍ NA GOOGLE SHEET OKX AI AGENTA (WEBHOOK) ---
+# --- SEM VLOŽÍŠ URL SVÉHO GOOGLE APPS SCRIPT AI AGENTA (VIZ NÁVOD NÍŽE) ---
 GOOGLE_SHEET_WEBHOOK_URL = ""
 
-# --- SOUBOROVÝ BUFFER NA DISKU SERVERU (PŘEŽIJE KAŽDÝ RELOAD I VLÁKNA) ---
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v3.json"
+# --- SOUBOROVÝ BUFFER NA DISKU SERVERU (NEZÁVISLÁ 1H STOPKA PRO SETUP 1 A SETUP 2) ---
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v4.json"
 
 @st.cache_resource
 def get_realtime_engine():
-    # Globální zámek v sys.__dict__, aby ho sdílela naprosto všechna vlákna v procesu
     if "OKX_GLOBAL_LOCK" not in sys.__dict__:
         sys.__dict__["OKX_GLOBAL_LOCK"] = threading.Lock()
     return {
         "lock": sys.__dict__["OKX_GLOBAL_LOCK"],
         "fut_buckets": {},
         "spot_buckets": {},
+        "fut_1m_buckets": {},
+        "spot_1m_buckets": {},
         "last_fut_trade_id": None,
         "last_spot_trade_id": None,
         "oi_start_map": {},
@@ -64,41 +65,36 @@ def _save_alert_history(history_dict):
     except Exception:
         pass
 
+def get_setup_cooldown_remaining(lock_key, lock_duration=3600):
+    now_ts = time.time()
+    with ENGINE["lock"]:
+        history = _load_alert_history()
+        last_trig = float(history.get(lock_key, 0.0))
+        elapsed = now_ts - last_trig
+        if elapsed < lock_duration:
+            return int(lock_duration - elapsed)
+    return 0
+
 def odesli_do_google_sheet_agenta(payload_data):
     if not GOOGLE_SHEET_WEBHOOK_URL:
         return False
     try:
-        res = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload_data, timeout=5)
+        res = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload_data, timeout=6)
         return res.status_code == 200
     except Exception:
         return False
 
-def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800, force=False, trade_payload=None):
+def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False, trade_payload=None):
     now_ts = time.time()
     with ENGINE["lock"]:
         history = _load_alert_history()
         if not force:
-            # 1. Globální protispamový buffer (min. 60 vteřin mezi jakýmikoliv zprávami)
-            last_any = float(history.get("ANY_ALERT_TS", 0.0))
-            if (now_ts - last_any) < 60.0:
+            # Kontrola nezávislé 1H (3600s) stopky pro daný Setup (S1_LOCK nebo S2_LOCK)
+            last_lock = float(history.get(lock_key, 0.0))
+            if (now_ts - last_lock) < lock_duration:
                 return False
 
-            # 2. Buffer pro celou kategorii (např. celý SETUP 1 má 30 minut = 1800s stopku po 1. zprávě)
-            if category_key:
-                last_cat = float(history.get(category_key, 0.0))
-                if (now_ts - last_cat) < category_cooldown:
-                    return False
-
-            # 3. Buffer pro konkrétní směr/zónu (výchozí 60 minut = 3600s)
-            last_specific = float(history.get(setup_id_key, 0.0))
-            if (now_ts - last_specific) < cooldown_sec:
-                return False
-
-        # Zápis okamžitě na disk ještě před odesláním, aby žádné paralelní vlákno neposlalo duplikát
-        history["ANY_ALERT_TS"] = now_ts
-        history[setup_id_key] = now_ts
-        if category_key:
-            history[category_key] = now_ts
+        history[lock_key] = now_ts
         _save_alert_history(history)
 
     if trade_payload is not None:
@@ -116,6 +112,37 @@ def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=360
     except Exception as e:
         print(f"Telegram alert selhal: {e}")
         return False
+
+def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label):
+    if direction == "SHORT":
+        sl_p = entry_p * 1.0025
+        tp2_p = lower_liq_p if (0 < lower_liq_p < entry_p) else (entry_p * 0.988)
+        tp1_p = entry_p - 0.5 * (entry_p - tp2_p)
+        side_str = "sell"
+    else:
+        sl_p = entry_p * 0.9975
+        tp2_p = upper_liq_p if (upper_liq_p > entry_p) else (entry_p * 1.012)
+        tp1_p = entry_p + 0.5 * (tp2_p - entry_p)
+        side_str = "buy"
+
+    sl_dist = abs(entry_p - sl_p)
+    tp2_dist = abs(entry_p - tp2_p)
+    rrr = (tp2_dist / sl_dist) if sl_dist > 0 else 0.0
+
+    return {
+        "setup": setup_label,
+        "direction": direction,
+        "side": side_str,
+        "entry_type": "limit",
+        "position_usd": 1000.0,
+        "margin_usd": 100.0,
+        "leverage": 10,
+        "entry": round(entry_p, 1),
+        "sl_market": round(sl_p, 1),
+        "tp1_limit_50pct": round(tp1_p, 1),
+        "tp2_limit_50pct": round(tp2_p, 1),
+        "rrr": round(rrr, 2)
+    }
 
 st.set_page_config(page_title="BTC Order Flow", page_icon="₿", layout="wide", initial_sidebar_state="collapsed")
 
@@ -392,7 +419,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
     
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | 24/7 Cloud Hlídač + 30m Buffer zapnutý"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Nezávislá 1H ochrana S1/S2 | Pos: 1000$ (100$x10)"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -411,30 +438,6 @@ def load_trading_data():
         return total_pnl, win_rate
     except Exception:
         return 0.0, 0.0
-
-@st.cache_data(ttl=3600)
-def get_contract_spec(inst_id):
-    for inst_type in ["SWAP", "FUTURES"]:
-        for host in ["https://eea.okx.com", "https://www.okx.com"]:
-            try:
-                url = f"{host}/api/v5/public/instruments?instType={inst_type}&instId={inst_id}"
-                data = requests.get(url, timeout=3).json().get("data", [])
-                if data:
-                    ct_val = float(data[0].get("ctVal", 0.0001))
-                    ct_ccy = data[0].get("ctValCcy", "BTC")
-                    return ct_val, ct_ccy
-            except Exception:
-                continue
-    if "UM_XPERP" in inst_id or "USDC" in inst_id:
-        return 0.0001, "BTC"
-    elif "USDT" in inst_id:
-        return 0.01, "BTC"
-    return 100.0, "USD"
-
-def to_btc_vol(raw_contracts, price, ct_val, ct_ccy):
-    if ct_ccy == "BTC":
-        return raw_contracts * ct_val
-    return (raw_contracts * ct_val) / price if price > 0 else 0.0
 
 def get_okx_candles(bar, limit, ts, inst_priority=None):
     if inst_priority is None:
@@ -482,10 +485,12 @@ def poll_realtime_okx_flow():
 
                 for tr in reversed(new_trades):
                     t_ts = int(tr["ts"])
-                    bucket = (t_ts // 300000) * 300000
+                    bucket_5m = (t_ts // 300000) * 300000
+                    bucket_1m = (t_ts // 60000) * 60000
                     vol_btc = float(tr["sz"]) * 0.01
                     delta = vol_btc if tr.get("side") == "buy" else -vol_btc
-                    ENGINE["fut_buckets"][bucket] = ENGINE["fut_buckets"].get(bucket, 0.0) + delta
+                    ENGINE["fut_buckets"][bucket_5m] = ENGINE["fut_buckets"].get(bucket_5m, 0.0) + delta
+                    ENGINE["fut_1m_buckets"][bucket_1m] = ENGINE["fut_1m_buckets"].get(bucket_1m, 0.0) + delta
     except Exception:
         pass
 
@@ -505,10 +510,12 @@ def poll_realtime_okx_flow():
 
                 for tr in reversed(new_s_trades):
                     t_ts = int(tr["ts"])
-                    bucket = (t_ts // 300000) * 300000
+                    bucket_5m = (t_ts // 300000) * 300000
+                    bucket_1m = (t_ts // 60000) * 60000
                     vol_btc = float(tr["sz"])
                     delta = vol_btc if tr.get("side") == "buy" else -vol_btc
-                    ENGINE["spot_buckets"][bucket] = ENGINE["spot_buckets"].get(bucket, 0.0) + delta
+                    ENGINE["spot_buckets"][bucket_5m] = ENGINE["spot_buckets"].get(bucket_5m, 0.0) + delta
+                    ENGINE["spot_1m_buckets"][bucket_1m] = ENGINE["spot_1m_buckets"].get(bucket_1m, 0.0) + delta
     except Exception:
         pass
 
@@ -553,6 +560,118 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
+def compute_single_1m_delta(m_candle, is_spot=False):
+    m_ts = int(m_candle[0])
+    with ENGINE["lock"]:
+        b_map = ENGINE["spot_1m_buckets"] if is_spot else ENGINE["fut_1m_buckets"]
+        real_1m = b_map.get(m_ts, 0.0)
+
+    o, h, l, cl = float(m_candle[1]), float(m_candle[2]), float(m_candle[3]), float(m_candle[4])
+    calc_1m = 0.0
+    if h > l:
+        vol_btc = float(m_candle[5]) if is_spot else float(m_candle[6])
+        body_p = (cl - o) / (h - l)
+        wick_p = (2.0 * cl - h - l) / (h - l)
+        sf = 0.16 if is_spot else 0.18
+        calc_1m = vol_btc * (0.60 * body_p + 0.40 * wick_p) * sf
+
+    if abs(real_1m) > abs(calc_1m) * 0.5:
+        return real_1m
+    if abs(real_1m) > 0.0:
+        return 0.6 * real_1m + 0.4 * calc_1m
+    return calc_1m
+
+# --- EXEKUČNÍ ENGINE PRO SETUP 1: 1M CVD/SPOT PRVNÍ LL/HH + PRVNÍ PULLBACK V CENĚ -> LIMIT ORDER ---
+def evaluate_setup1_1m_entry(direction, candles_1m_fut, candles_1m_spot, btc_price, upper_liq_p, lower_liq_p, setup_label):
+    plan = build_trade_plan(direction, btc_price, upper_liq_p, lower_liq_p, setup_label)
+
+    m_fut_asc = candles_1m_fut[:15][::-1] if len(candles_1m_fut) >= 15 else candles_1m_fut[::-1]
+    m_spot_asc = candles_1m_spot[:15][::-1] if len(candles_1m_spot) >= 15 else candles_1m_spot[::-1]
+
+    if len(m_fut_asc) < 6:
+        return False, f"Čekám na 1M data | Limit: {plan['entry']:.0f}$ | SL (0.25% Mkt): {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$", plan
+
+    n_m = min(len(m_fut_asc), len(m_spot_asc)) if len(m_spot_asc) >= 6 else len(m_fut_asc)
+    m_fut_asc = m_fut_asc[-n_m:]
+    m_spot_asc = m_spot_asc[-n_m:] if len(m_spot_asc) >= n_m else m_fut_asc
+
+    cum_f, cum_s = [], []
+    rf, rs = 0.0, 0.0
+    opens_1m, highs_1m, lows_1m, closes_1m = [], [], [], []
+
+    for idx in range(n_m):
+        df_val = compute_single_1m_delta(m_fut_asc[idx], is_spot=False)
+        ds_val = compute_single_1m_delta(m_spot_asc[idx], is_spot=True)
+        rf += df_val
+        rs += ds_val
+        cum_f.append(rf)
+        cum_s.append(rs)
+        opens_1m.append(float(m_fut_asc[idx][1]))
+        highs_1m.append(float(m_fut_asc[idx][2]))
+        lows_1m.append(float(m_fut_asc[idx][3]))
+        closes_1m.append(float(m_fut_asc[idx][4]))
+
+    closes_1m[-1] = btc_price
+    highs_1m[-1] = max(highs_1m[-1], btc_price)
+    lows_1m[-1] = min(lows_1m[-1], btc_price)
+
+    trigger_fired = False
+    trigger_desc = ""
+
+    if direction == "SHORT":
+        hh_f_idx = max(range(1, n_m - 1), key=lambda k: cum_f[k])
+        prev_low_f = min(cum_f[:hh_f_idx + 1])
+        post_low_f = min(cum_f[hh_f_idx:])
+        ll_f_idx = hh_f_idx + cum_f[hh_f_idx:].index(post_low_f)
+        cvd_ll_ok = (hh_f_idx >= 1) and (post_low_f < prev_low_f or (cum_f[hh_f_idx] - post_low_f) >= 5.0)
+
+        hh_s_idx = max(range(1, n_m - 1), key=lambda k: cum_s[k])
+        prev_low_s = min(cum_s[:hh_s_idx + 1])
+        post_low_s = min(cum_s[hh_s_idx:])
+        ll_s_idx = hh_s_idx + cum_s[hh_s_idx:].index(post_low_s)
+        spot_ll_ok = (hh_s_idx >= 1) and (post_low_s < prev_low_s or (cum_s[hh_s_idx] - post_low_s) >= 1.0)
+
+        if cvd_ll_ok or spot_ll_ok:
+            ref_ll_idx = ll_f_idx if cvd_ll_ok else ll_s_idx
+            flow_src = "1M CVD" if cvd_ll_ok else "1M SPOT"
+            min_p_at_ll = min(lows_1m[max(0, ref_ll_idx - 1):ref_ll_idx + 1])
+            pullback_up = (btc_price > min_p_at_ll + 4.0) or any(closes_1m[k] > opens_1m[k] for k in range(ref_ll_idx, n_m))
+            if pullback_up:
+                trigger_fired = True
+                trigger_desc = f"✅ LIMIT SHORT AKTIVOVÁN ({flow_src} 1. LL + pullback) | Vstup: {plan['entry']:.0f}$ (1000$) | SL Mkt: {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$"
+            else:
+                trigger_desc = f"⏳ {flow_src} udělalo 1. LL – čekám na 1. pullback ceny pro Limit Short ({plan['entry']:.0f}$)"
+        else:
+            trigger_desc = f"⏳ Detekce přepnuta na 1M: Hledám 1. LL na 1M CVD/Spotu | Plán SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+    else:
+        ll_f_idx = min(range(1, n_m - 1), key=lambda k: cum_f[k])
+        prev_high_f = max(cum_f[:ll_f_idx + 1])
+        post_high_f = max(cum_f[ll_f_idx:])
+        hh_f_idx = ll_f_idx + cum_f[ll_f_idx:].index(post_high_f)
+        cvd_hh_ok = (ll_f_idx >= 1) and (post_high_f > prev_high_f or (post_high_f - cum_f[ll_f_idx]) >= 5.0)
+
+        ll_s_idx = min(range(1, n_m - 1), key=lambda k: cum_s[k])
+        prev_high_s = max(cum_s[:ll_s_idx + 1])
+        post_high_s = max(cum_s[ll_s_idx:])
+        hh_s_idx = ll_s_idx + cum_s[ll_s_idx:].index(post_high_s)
+        spot_hh_ok = (ll_s_idx >= 1) and (post_high_s > prev_high_s or (post_high_s - cum_s[ll_s_idx]) >= 1.0)
+
+        if cvd_hh_ok or spot_hh_ok:
+            ref_hh_idx = hh_f_idx if cvd_hh_ok else hh_s_idx
+            flow_src = "1M CVD" if cvd_hh_ok else "1M SPOT"
+            max_p_at_hh = max(highs_1m[max(0, ref_hh_idx - 1):ref_hh_idx + 1])
+            pullback_down = (btc_price < max_p_at_hh - 4.0) or any(closes_1m[k] < opens_1m[k] for k in range(ref_hh_idx, n_m))
+            if pullback_down:
+                trigger_fired = True
+                trigger_desc = f"✅ LIMIT LONG AKTIVOVÁN ({flow_src} 1. HH + pullback) | Vstup: {plan['entry']:.0f}$ (1000$) | SL Mkt: {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$"
+            else:
+                trigger_desc = f"⏳ {flow_src} udělalo 1. HH – čekám na 1. pullback ceny pro Limit Long ({plan['entry']:.0f}$)"
+        else:
+            trigger_desc = f"⏳ Detekce přepnuta na 1M: Hledám 1. HH na 1M CVD/Spotu | Plán SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+
+    plan["trigger_ready"] = trigger_fired
+    return trigger_fired, trigger_desc, plan
+
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     curr_5m_candle = (int(time.time() * 1000) // 300000) * 300000
     with ENGINE["lock"]:
@@ -580,7 +699,7 @@ def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     for idx, c in enumerate(recent_asc):
         try:
             c_ts = int(c[0])
-            o, h, l, cl = float(c[1]), float(c[2]), float(c[3]), float(c[4])
+            h, l = float(c[2]), float(c[3])
             vol_btc = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
             oi_ch = oi_change_map.get(c_ts, 0.0)
 
@@ -784,17 +903,24 @@ def fetch_okx_data():
         oi_9 = sum(oi_12[-9:]) if len(oi_12) >= 9 else 0.0
 
         return (cvd_1, cvd_5, cvd_9, scvd_1, scvd_5, scvd_9, oi_1, oi_5, oi_9,
-                cvd_12, scvd_12, c_12_asc, candles_300, candles_1h, fut_map, spot_map, oi_change_map, btc_price, vp_data, liq_data)
+                cvd_12, scvd_12, c_12_asc, candles_300, candles_1h, fut_map, spot_map, oi_change_map,
+                btc_price, vp_data, liq_data, candles_1m_fut, candles_1m_spot)
     except Exception:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0))
+                [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
+# --- SETUP 1: PŘESNÁ LOGIKA (2 RETESTY DO 0.10%, PULLBACK 0.18%, RANGE 0.15% KNOT-KNOT, CVD > 50 / SPOT > 10) ---
+def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p):
     try:
+        # 1. Kontrola 1H ochranné stopky pro Setup 1 (Setup 2 zůstává povolený)
+        rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
+        if rem_s1 > 0:
+            mins_left = (rem_s1 // 60) + 1
+            return f"🔒 Setup 1 uzamčen po dobu 1H od posledního signálu (zbývá {mins_left} min) | Setup 2 je plně aktivní.", False
+
         if len(c_12_asc) < 12 or len(cvd_12) < 12 or len(scvd_12) < 12:
             return "Načítám strukturu svíček...", False
 
-        opens = [float(c[1]) for c in c_12_asc]
         highs = [float(c[2]) for c in c_12_asc]
         lows = [float(c[3]) for c in c_12_asc]
         closes = [float(c[4]) for c in c_12_asc]
@@ -811,102 +937,125 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             cum_s.append(cs)
 
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
-        
-        for j in range(11, 1, -1):
-            for i in range(j - 2, -1, -1):
-                
-                # --- 1. BEARISH EQUAL HIGHS ---
-                wick_diff_h = abs(highs[j] - highs[i])
-                if wick_diff_h <= 50.0 and max(highs[i], highs[j]) >= max_all_h - 25.0:
-                    between_lows = lows[i + 1:j]
-                    if not between_lows:
-                        continue
-                    min_pullback_h = min(between_lows)
-                    pullback_rel_idx = between_lows.index(min_pullback_h)
-                    pullback_idx = (i + 1) + pullback_rel_idx
 
-                    has_red_pullback = any(closes[k] < opens[k] for k in range(i + 1, pullback_idx + 1))
-                    has_green_return = any(closes[k] > opens[k] for k in range(pullback_idx, j + 1))
+        # --- 1) EQUAL HIGHS / LOWS (Pullback >= 0.18 %, min. 2 pokusy o retest s knoty do 0.10 %, CVD > 50 nebo Spot > 10 při CVD >= -10) ---
+        for i in range(0, 9):
+            # A) BEARISH EQUAL HIGHS
+            h_init = highs[i]
+            if h_init >= max_all_h * (1.0 - 0.0010):
+                pullback_done = False
+                min_pb_low = h_init
+                retest_indices = []
+                invalid_break = False
 
-                    max_between_h = max(highs[i + 1:j])
-                    if (has_red_pullback and has_green_return and
-                        max_between_h <= max(highs[i], highs[j]) + 15.0 and
-                        (max(highs[i], highs[j]) - min_pullback_h) >= 120.0):
+                for k in range(i + 1, 12):
+                    if highs[k] > h_init * (1.0 + 0.0010):
+                        invalid_break = True
+                        break
+                    if lows[k] < min_pb_low:
+                        min_pb_low = lows[k]
+                    if (h_init - min_pb_low) >= (h_init * 0.0018):
+                        pullback_done = True
+                    # Po dosažení pullbacku >= 0.18 % počítáme svíčky, které retestují prvotní high s odchylkou knotu <= 0.10 %
+                    if pullback_done and abs(highs[k] - h_init) <= (h_init * 0.0010):
+                        retest_indices.append(k)
 
+                # Potřeba minimálně 2 pokusy o retest (celkem 3. test vrcholu) a rozdíl mezi všemi knoty <= 0.10 %
+                if not invalid_break and len(retest_indices) >= 2:
+                    all_retest_wicks = [h_init] + [highs[r] for r in retest_indices]
+                    if (max(all_retest_wicks) - min(all_retest_wicks)) <= (h_init * 0.0010):
+                        j = retest_indices[-1]
                         c_diff = cum_c[j] - cum_c[i]
                         s_diff = cum_s[j] - cum_s[i]
 
-                        valid_bear_abs = (c_diff >= 15.0 and s_diff >= -2.0) or (s_diff >= 3.0 and c_diff >= -5.0)
-                        if valid_bear_abs:
-                            src_name = "CVD+SPOT" if (c_diff >= 15.0 and s_diff >= 3.0) else ("CVD" if c_diff >= 15.0 else "SPOT")
-                            msg = f"{prefix}🔥 BEARISH ABSORPCE (Equal Highs Δ {wick_diff_h:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na vrcholu (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            # Klíč nezávislý na indexu svíčky i -> 60 min stopka na Bearish Setup 1 + 30 min globální stopka na celý Setup 1
-                            zone_bucket = int(round(max_all_h / 300.0) * 300)
-                            setup_key = f"S1_BEAR_{zone_bucket}"
-                            if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BEARISH EQUAL HIGHS", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
-                            return msg, bool(liquid_ok)
+                        valid_bear_flow = (c_diff > 50.0) or (s_diff > 10.0 and c_diff >= -10.0)
+                        if valid_bear_flow:
+                            pb_pct = ((h_init - min_pb_low) / h_init) * 100.0
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
+                                "SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQUAL HIGHS"
+                            )
+                            msg = f"{prefix}🔥 BEARISH EQUAL HIGHS ({len(retest_indices)}x retest do 0.10% | Pullback {pb_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                            if liquid_ok and entry_ok:
+                                clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
+                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (EQUAL HIGHS)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                            return msg, bool(liquid_ok and entry_ok)
 
-                # --- 2. BULLISH EQUAL LOWS ---
-                wick_diff_l = abs(lows[j] - lows[i])
-                if wick_diff_l <= 50.0 and min(lows[i], lows[j]) <= min_all_l + 25.0:
-                    between_highs = highs[i + 1:j]
-                    if not between_highs:
-                        continue
-                    max_bounce_l = max(between_highs)
-                    bounce_rel_idx = between_highs.index(max_bounce_l)
-                    bounce_idx = (i + 1) + bounce_rel_idx
+            # B) BULLISH EQUAL LOWS
+            l_init = lows[i]
+            if l_init <= min_all_l * (1.0 + 0.0010):
+                bounce_done = False
+                max_b_high = l_init
+                retest_l_indices = []
+                invalid_drop = False
 
-                    has_green_bounce = any(closes[k] > opens[k] for k in range(i + 1, bounce_idx + 1))
-                    has_red_return = any(closes[k] < opens[k] for k in range(bounce_idx, j + 1))
+                for k in range(i + 1, 12):
+                    if lows[k] < l_init * (1.0 - 0.0010):
+                        invalid_drop = True
+                        break
+                    if highs[k] > max_b_high:
+                        max_b_high = highs[k]
+                    if (max_b_high - l_init) >= (l_init * 0.0018):
+                        bounce_done = True
+                    if bounce_done and abs(lows[k] - l_init) <= (l_init * 0.0010):
+                        retest_l_indices.append(k)
 
-                    min_between_l = min(lows[i + 1:j])
-                    if (has_green_bounce and has_red_return and
-                        min_between_l >= min(lows[i], lows[j]) - 15.0 and
-                        (max_bounce_l - min(lows[i], lows[j])) >= 120.0):
-
+                if not invalid_drop and len(retest_l_indices) >= 2:
+                    all_retest_lows = [l_init] + [lows[r] for r in retest_l_indices]
+                    if (max(all_retest_lows) - min(all_retest_lows)) <= (l_init * 0.0010):
+                        j = retest_l_indices[-1]
                         c_diff = cum_c[j] - cum_c[i]
                         s_diff = cum_s[j] - cum_s[i]
 
-                        valid_bull_abs = (c_diff <= -15.0 and s_diff <= 2.0) or (s_diff <= -3.0 and c_diff <= 5.0)
-                        if valid_bull_abs:
-                            src_name = "CVD+SPOT" if (c_diff <= -15.0 and s_diff <= -3.0) else ("CVD" if c_diff <= -15.0 else "SPOT")
-                            msg = f"{prefix}🔥 BULLISH ABSORPCE (Equal Lows Δ {wick_diff_l:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na dně (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            zone_bucket = int(round(min_all_l / 300.0) * 300)
-                            setup_key = f"S1_BULL_{zone_bucket}"
-                            if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BULLISH EQUAL LOWS", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
-                            return msg, bool(liquid_ok)
+                        valid_bull_flow = (c_diff < -50.0) or (s_diff < -10.0 and c_diff <= 10.0)
+                        if valid_bull_flow:
+                            b_pct = ((max_b_high - l_init) / l_init) * 100.0
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
+                                "LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQUAL LOWS"
+                            )
+                            msg = f"{prefix}🔥 BULLISH EQUAL LOWS ({len(retest_l_indices)}x retest do 0.10% | Pullback {b_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                            if liquid_ok and entry_ok:
+                                clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
+                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (EQUAL LOWS)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                            return msg, bool(liquid_ok and entry_ok)
 
-        # --- 3. ÚZKÝ RANGE (ZÁMEK) ---
-        max_body_pct = 0.0018
-        for win in range(6, 12):
-            sub_c = closes[-win:]
-            ref_price = sub_c[-1] if sub_c[-1] > 0 else 75000.0
-            close_spread = max(sub_c) - min(sub_c)
-            close_spread_pct = (close_spread / ref_price) * 100.0
+        # --- 2) ÚZKÝ RANGE (Min. 5 svíček, rozdíl KNOT TO KNOT <= 0.15 %, CVD > 50 nebo Spot > 10 při CVD >= -10) ---
+        for win in range(5, 13):
+            sub_h = highs[-win:]
+            sub_l = lows[-win:]
+            ref_price = closes[-1] if closes[-1] > 0 else 75000.0
+            wick_to_wick_spread = max(sub_h) - min(sub_l)
+            wick_spread_pct = (wick_to_wick_spread / ref_price) * 100.0
 
-            if close_spread <= (ref_price * max_body_pct):
+            if wick_to_wick_spread <= (ref_price * 0.0015):
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
-                range_zone_bucket = int(round(ref_price / 300.0) * 300)
 
-                if (c_sum >= 35.0 and s_sum >= -2.0) or (s_sum >= 5.0 and c_sum >= 0.0):
-                    msg = f"{prefix}🔥 BEARISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen nákup (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
-                    if liquid_ok:
-                        odesli_upozorneni(f"S1_BEAR_{range_zone_bucket}", "SETUP 1: BEARISH ÚZKÝ RANGE", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
-                    return msg, bool(liquid_ok)
-                if (c_sum <= -35.0 and s_sum <= 2.0) or (s_sum <= -5.0 and c_sum <= 0.0):
-                    msg = f"{prefix}🔥 BULLISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen prodej (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
-                    if liquid_ok:
-                        odesli_upozorneni(f"S1_BULL_{range_zone_bucket}", "SETUP 1: BULLISH ÚZKÝ RANGE", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
-                    return msg, bool(liquid_ok)
+                if (c_sum > 50.0) or (s_sum > 10.0 and c_sum >= -10.0):
+                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
+                        "SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH ÚZKÝ RANGE"
+                    )
+                    msg = f"{prefix}🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                    if liquid_ok and entry_ok:
+                        clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
+                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (RANGE)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                    return msg, bool(liquid_ok and entry_ok)
 
-        return "Skenuji Setup 1 (Equal Highs/Lows + Úzký Range)...", False
+                if (c_sum < -50.0) or (s_sum < -10.0 and c_sum <= 10.0):
+                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
+                        "LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH ÚZKÝ RANGE"
+                    )
+                    msg = f"{prefix}🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                    if liquid_ok and entry_ok:
+                        clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
+                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (RANGE)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                    return msg, bool(liquid_ok and entry_ok)
+
+        return "Skenuji Setup 1 (Equal H/L: 2x retest ≤0.10%, PB ≥0.18%, CVD>50/Spot>10 | Range: min. 5 sv. knot-knot ≤0.15%)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
-def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
+# --- SETUP 2: 3 AŽ 9 SVÍČEK VČETNĚ SWEEPU, OI <= -50 BTC, CVD ANOMÁLIE |Δ| >= 100 BTC, LIMIT ENTRY 0.05% Z LEVELU ---
+def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p):
     try:
         if len(candles_300) < 20 or len(candles_1h) < 10:
             return "Načítám historii trhu...", False, "Skenuji levely..."
@@ -957,13 +1106,29 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
             ("LON H", lon_h, True, 14),
             ("LON L", lon_l, False, 14)
         ]
+
+        untouched_levels = []
+        for name, val, is_high, valid_from_hour in raw_levels:
+            if val <= 0 or now_prague.hour < valid_from_hour:
+                continue
+            swept = any((tc[5] >= valid_from_hour and ((is_high and tc[2] >= val) or (not is_high and tc[3] <= val))) for tc in today_candles)
+            if not swept:
+                untouched_levels.append(f"{name}: {val:.0f}")
+        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
+
+        # 1. Kontrola 1H ochranné stopky pro Setup 2 (Setup 1 zůstává povolený)
+        rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
+        if rem_s2 > 0:
+            mins_left = (rem_s2 // 60) + 1
+            return f"🔒 Setup 2 uzamčen po dobu 1H od posledního signálu (zbývá {mins_left} min) | Setup 1 je plně aktivní.", False, levels_str
+
         cum_cvd_today = []
         running_cvd = 0.0
         for tc in today_candles:
             running_cvd += fut_map.get(tc[0], 0.0)
             cum_cvd_today.append(running_cvd)
 
-        untouched_levels, pending_retest_msgs = [], []
+        pending_retest_msgs = []
         triggered_msg, is_triggered = None, False
         prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
         n_today = len(today_candles)
@@ -984,69 +1149,74 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
                     break
 
             if sweep_idx is None:
-                untouched_levels.append(f"{name}: {val:.0f}")
                 continue
 
             ts_sweep = today_candles[sweep_idx][0]
-            oi_flush = min(
-                oi_change_map.get(ts_sweep, 0.0),
-                oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0)
-            )
-
-            if oi_flush > -50.0:
-                continue
-
+            # Limit Entry přesně na 0.05 % ze sweepnutého levelu
+            limit_entry_p = val * (1.0 - 0.0005) if is_high else val * (1.0 + 0.0005)
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            min_retest_idx = sweep_idx + 2
-            max_retest_idx = min(sweep_idx + 9, n_today - 1)
+            # Konfigurace min. 3 svíčky včetně sweep svíčky (sweep_idx + 2) až max. 9 svíček včetně sweep svíčky (sweep_idx + 8)
+            min_r_idx = sweep_idx + 2
+            max_r_idx = min(sweep_idx + 8, n_today - 1)
 
-            if (n_today - 1) >= min_retest_idx:
-                for r_idx in range(min_retest_idx, max_retest_idx + 1):
+            if (n_today - 1) >= min_r_idx:
+                for r_idx in range(min_r_idx, max_r_idx + 1):
                     tc_r = today_candles[r_idx]
+                    ts_r = tc_r[0]
                     cvd_at_retest = cum_cvd_today[r_idx]
                     cvd_diff = cvd_at_retest - cvd_at_sweep
 
-                    price_returned = (tc_r[2] >= val - 35.0) if is_high else (tc_r[3] <= val + 35.0)
+                    # OI výplach min. -50 BTC (při sweepu nebo při retestu)
+                    oi_sweep = min(oi_change_map.get(ts_sweep, 0.0), oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0))
+                    oi_retest = min(oi_change_map.get(ts_r, 0.0), sum(oi_change_map.get( today_candles[k][0], 0.0 ) for k in range(sweep_idx, r_idx + 1)))
+                    best_oi_flush = min(oi_sweep, oi_retest)
 
-                    if price_returned:
-                        if is_high and cvd_diff >= 100.0:
-                            if r_idx >= (n_today - 3):
-                                triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
-                                is_triggered = bool(liquid_ok)
-                                if is_triggered:
-                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=43200, category_key="GLOBAL_SETUP2", category_cooldown=1800)
-                            retest_hit = True
-                            break
-                        elif not is_high and cvd_diff <= -100.0:
-                            if r_idx >= (n_today - 3):
-                                triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
-                                is_triggered = bool(liquid_ok)
-                                if is_triggered:
-                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=43200, category_key="GLOBAL_SETUP2", category_cooldown=1800)
-                            retest_hit = True
-                            break
+                    # Retest nebo pokus na 0.05 % ze sweepnutého levelu
+                    reached_005 = (tc_r[2] >= limit_entry_p) if is_high else (tc_r[3] <= limit_entry_p)
 
-            candles_since_sweep = (n_today - 1) - sweep_idx
-            if not retest_hit and 0 <= candles_since_sweep <= 9:
+                    # Podmínka: OI <= -50 BTC a CVD anomálie min. 100 BTC rozdíl (více než +100 nebo méně než -100 BTC)
+                    if reached_005 and best_oi_flush <= -50.0 and abs(cvd_diff) >= 100.0:
+                        if r_idx >= (n_today - 2):
+                            direction = "SHORT" if is_high else "LONG"
+                            t_payload = build_trade_plan(direction, limit_entry_p, upper_p, lower_p, f"SETUP 2: SFP {name} {direction}")
+                            t_payload["trigger_ready"] = True
+                            candle_num = (r_idx - sweep_idx) + 1
+                            entry_txt = (
+                                f"✅ LIMIT {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | "
+                                f"SL Mkt: {t_payload['sl_market']:.0f}$ | TP1 (50%): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (50%): {t_payload['tp2_limit_50pct']:.0f}$"
+                            )
+                            triggered_msg = (
+                                f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$ | {candle_num}. svíčka konf.): "
+                                f"OI {best_oi_flush:.1f} BTC | CVD Δ {cvd_diff:+.1f} BTC<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                            )
+                            is_triggered = bool(liquid_ok)
+                            if is_triggered:
+                                clean_tg = triggered_msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
+                                odesli_upozorneni("S2_LOCK_1H", f"SETUP 2: {name} LIMIT {direction}", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                        retest_hit = True
+                        break
+
+            total_candles_elapsed = (n_today - sweep_idx)
+            if not retest_hit and 1 <= total_candles_elapsed <= 9:
                 curr_diff = cum_cvd_today[-1] - cvd_at_sweep
-                sv_left = 9 - candles_since_sweep
-                pending_retest_msgs.append(f"⏳ {name} ({val:.0f}) vybrán (OI {oi_flush:.1f}) – okno retestu 2–9 sv. (zbývá {sv_left} sv. | CVD Δ {curr_diff:+.1f})")
+                sv_left = 9 - total_candles_elapsed
+                pending_retest_msgs.append(
+                    f"⏳ {name} ({val:.0f}$) vybrán ({total_candles_elapsed}/9 sv.) – čekám retest na 0.05% ({limit_entry_p:.0f}$) | CVD Δ {curr_diff:+.1f} BTC (zbývá {sv_left} sv.)"
+                )
 
-        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
         if triggered_msg:
             final_msg = triggered_msg
         elif pending_retest_msgs:
             final_msg = " | ".join(pending_retest_msgs)
         else:
-            final_msg = "Čekám na protnutí Macro Levelu s výplachem OI (-50 BTC) a retest (2–9 svíček)..."
+            final_msg = "Skenuji Setup 2 (3–9 svíček vč. sweepu | OI ≤ -50 BTC | CVD |Δ| ≥ 100 BTC | Limit 0.05% z levelu)..."
 
         return final_msg, is_triggered, levels_str
     except Exception:
         return "Načítám levely...", False, ""
 
-# --- 24/7 HLÍDAČ S AUTOMATICKÝM UKONČENÍM STARÝCH VLÁKEN ---
 @st.cache_resource
 def start_background_guardian():
     my_token = str(uuid.uuid4())
@@ -1055,7 +1225,6 @@ def start_background_guardian():
     def _guardian_loop(thread_token):
         tick = 0
         while True:
-            # Pokud byl načten novější kód, staré vlákno se okamžitě ukončí!
             if sys.__dict__.get("OKX_GUARDIAN_TOKEN") != thread_token:
                 break
             try:
@@ -1066,8 +1235,10 @@ def start_background_guardian():
                         data = fetch_okx_data()
                         cvd_12, scvd_12, c_12_asc = data[9], data[10], data[11]
                         c_300, c_1h, fut_map, oi_change_map = data[12], data[13], data[14], data[16]
-                        scan_setup_1(c_12_asc, cvd_12, scvd_12, liq_ok)
-                        scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liq_ok)
+                        b_p, liq_d, m1_f, m1_s = data[17], data[19], data[20], data[21]
+                        up_p, _, low_p, _ = liq_d
+                        scan_setup_1(c_12_asc, cvd_12, scvd_12, liq_ok, m1_f, m1_s, b_p, up_p, low_p)
+                        scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liq_ok, b_p, up_p, low_p)
                 tick += 1
             except Exception:
                 pass
@@ -1082,12 +1253,13 @@ start_background_guardian()
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
 (cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9,
- cvd_12, scvd_12, c_12_asc, c_300, c_1h, fut_map, spot_map, oi_change_map, b_price, vp_data, liq_data) = fetch_okx_data()
+ cvd_12, scvd_12, c_12_asc, c_300, c_1h, fut_map, spot_map, oi_change_map,
+ b_price, vp_data, liq_data, m1_fut, m1_spot) = fetch_okx_data()
 poc_1h, vah_1h, val_1h = vp_data
 upper_p, upper_btc, lower_p, lower_btc = liq_data
 
-msg1, trg1 = scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok)
-msg2, trg2, l_str = scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liquid_ok)
+msg1, trg1 = scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, m1_fut, m1_spot, b_price, upper_p, lower_p)
+msg2, trg2, l_str = scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liquid_ok, b_price, upper_p, lower_p)
 
 if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
@@ -1148,13 +1320,13 @@ matrix_html = "\n".join([
     '</div>',
     '<div style="display: flex; flex-direction: column; justify-content: space-between;">',
     '<div class="liq-bumper-box">',
-    '<div style="color: #f85149; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 SHORT LIQ (+2%)</div>',
+    '<div style="color: #f85149; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 TP2 LONG (50%) / SHORT LIQ (+2%)</div>',
     f'<div style="font-size: 19px; font-weight: 900; color: #ffffff; font-family: \'Orbitron\', sans-serif; text-shadow: 0 0 10px rgba(248,81,73,0.7);">{upper_p:,.0f} $</div>',
     f'<div style="color: #f1e05a; font-size: 11px; font-weight: 900; text-shadow: 0 1px 3px #000;">({upper_btc:.1f} BTC)</div>',
     '</div>',
     f'<div class="matrix-live-price">{b_price:,.0f}</div>',
     '<div class="liq-bumper-box">',
-    '<div style="color: #3fb950; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 LONG LIQ (-2%)</div>',
+    '<div style="color: #3fb950; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 TP2 SHORT (50%) / LONG LIQ (-2%)</div>',
     f'<div style="font-size: 19px; font-weight: 900; color: #ffffff; font-family: \'Orbitron\', sans-serif; text-shadow: 0 0 10px rgba(63,185,80,0.7);">{lower_p:,.0f} $</div>',
     f'<div style="color: #f1e05a; font-size: 11px; font-weight: 900; text-shadow: 0 1px 3px #000;">({lower_btc:.1f} BTC)</div>',
     '</div>',
@@ -1353,11 +1525,11 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (EQUAL H/L & ÚZKÝ RANGE)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (2x RETEST ≤0.10% | RANGE ≤0.15% | 1M LIMIT ENTRY)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 18px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP + RETEST (2–9 SVÍČEK)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP (3–9 SV. | OI ≤-50 | CVD |Δ|≥100 | LIMIT 0.05%)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -1386,14 +1558,16 @@ if st.button("🔄 AKTUALIZOVAT"):
     st.rerun()
 
 if st.button("📲 OTESTOVAT TELEGRAM SPOJENÍ"):
+    test_plan = build_trade_plan("SHORT", b_price, upper_p, lower_p, "TEST AI AGENT")
     ok = odesli_upozorneni(
         "TEST_PING",
-        "TEST SPOJENÍ OKX TERMINÁL",
-        f"✅ Telegram notifikace + 30m Buffer funguje! Live cena BTC: {b_price:.0f} $ | CVD: {cvd1:+.1f} | Spot: {scvd1:+.1f}",
-        force=True
+        "TEST SPOJENÍ OKX TERMINÁL + AI AGENT",
+        f"✅ Spojení funguje! Live BTC: {b_price:.0f}$ | Test Pos: 1000$ (100$x10) | SL (0.25% Mkt): {test_plan['sl_market']:.0f}$ | TP1 (50% Lmt): {test_plan['tp1_limit_50pct']:.0f}$ | TP2 (50% Lmt): {test_plan['tp2_limit_50pct']:.0f}$",
+        force=True,
+        trade_payload=test_plan
     )
     if ok:
-        st.success("Testovací zpráva byla odeslána na tvůj Telegram!")
+        st.success("Testovací zpráva byla odeslána na tvůj Telegram (a do Google Sheet Webhooku)!")
     else:
         st.error("Odeslání selhalo.")
 
