@@ -19,11 +19,13 @@ from plotly.subplots import make_subplots
 # --- NASTAVENÍ TELEGRAM NOTIFIKACÍ A PARAMETRŮ ---
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v7.json"
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v8.json"
 
-SL_PCT = 0.0030         # Pevný Market Stop-Loss 0.30 %
-PB_1M_PCT = 0.0012      # Požadovaný pullback v ceně pro vstup na 1M grafu (0.12 %)
-S2_LIMIT_PCT = 0.0005   # Limit Entry u Setupu 2 na 0.05 % od sweepnuté hladiny
+SL_PCT = 0.0030               # Pevný Market Stop-Loss 0.30 %
+PB_1M_PCT = 0.0012            # Požadovaný pullback v ceně pro vstup na 1M grafu (0.12 %)
+S2_LIMIT_PCT = 0.0005         # Limit Entry u Setupu 2 na 0.05 % od sweepnuté hladiny
+PENDING_ORDER_TTL_SEC = 900   # Automatické zrušení nevyplněné limitky po 15 minutách (900 s)
+S1_MEMORY_TTL_SEC = 1200      # Paměť potvrzeného 5M Setupu 1 při čekání na 1M strukturu (20 min)
 
 # --- ZABEZPEČENÉ NAČTENÍ OKX API KLÍČŮ ZE STREAMLIT SECRETS ---
 try:
@@ -59,7 +61,17 @@ def get_realtime_engine():
             "upper_btc": 0.0,
             "lower_p": 0.0,
             "lower_btc": 0.0
-        }
+        },
+        "s1_memory": {
+            "active": False,
+            "direction": "",
+            "setup_label": "",
+            "header_text": "",
+            "confirm_1m_ts": 0,
+            "locked_at_sec": 0.0,
+            "zone_extreme_p": 0.0
+        },
+        "be_moved_algos": set()
     }
 
 ENGINE = get_realtime_engine()
@@ -90,6 +102,124 @@ def get_setup_cooldown_remaining(lock_key, lock_duration=3600):
             return int(lock_duration - elapsed)
     return 0
 
+def _okx_signed_request(method, path, body=""):
+    api_key = OKX_SECRETS.get("API_KEY", "")
+    sec_key = OKX_SECRETS.get("SECRET_KEY", "")
+    passphrase = OKX_SECRETS.get("PASSPHRASE", "")
+    base_url = "https://eea.okx.com"
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    msg = ts + method + path + body
+    mac = hmac.new(bytes(sec_key, "utf-8"), bytes(msg, "utf-8"), digestmod=hashlib.sha256)
+    sign = base64.b64encode(mac.digest()).decode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "OK-ACCESS-KEY": api_key,
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": passphrase,
+        "x-simulated-trading": "0"
+    }
+    if method == "GET":
+        return requests.get(base_url + path, headers=headers, timeout=5).json()
+    else:
+        return requests.post(base_url + path, headers=headers, data=body, timeout=5).json()
+
+def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False):
+    now_ts = time.time()
+    with ENGINE["lock"]:
+        history = _load_alert_history()
+        if not force:
+            last_lock = float(history.get(lock_key, 0.0))
+            if (now_ts - last_lock) < lock_duration:
+                return False
+        history[lock_key] = now_ts
+        _save_alert_history(history)
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": f"🚨 <b>{setup_nazev}</b>\n\n{detail_zpravy}",
+            "parse_mode": "HTML"
+        }
+        res = requests.post(url, json=payload, timeout=5)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"Telegram alert selhal: {e}")
+        return False
+
+# --- AKTIVNÍ SPRÁVA POZIC A OBJEDNÁVEK (15M AUTO-CANCEL + AUTO BREAK-EVEN PO TP1) ---
+def manage_active_okx_lifecycle():
+    if not OKX_SECRETS.get("ENABLED"):
+        return
+    if not OKX_SECRETS.get("API_KEY") or not OKX_SECRETS.get("SECRET_KEY"):
+        return
+
+    inst_id = OKX_SECRETS["INST_ID"]
+    ct_val = OKX_SECRETS["CONTRACT_BTC"]
+    now_ms = int(time.time() * 1000)
+
+    try:
+        # 1. Kontrola čekajících Limit příkazů – zrušení po 15 minutách (900 s)
+        pend = _okx_signed_request("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
+        pend_list = pend.get("data", []) if isinstance(pend, dict) else []
+        for ord_item in pend_list:
+            c_time = int(ord_item.get("cTime", now_ms))
+            ord_id = str(ord_item.get("ordId", ""))
+            if ord_id and (now_ms - c_time) >= (PENDING_ORDER_TTL_SEC * 1000):
+                cancel_body = json.dumps({"instId": inst_id, "ordId": ord_id})
+                c_res = _okx_signed_request("POST", "/api/v5/trade/cancel-order", cancel_body)
+                if str(c_res.get("code")) == "0":
+                    odesli_upozorneni(
+                        f"CANCEL_{ord_id}",
+                        "AI AGENT: ZRUŠENA EXPIROVANÁ LIMITKA (15 MIN)",
+                        f"⏱️ Nevyplněná Post-Only objednávka ({ord_id}) byla po 15 minutách automaticky zrušena, protože cena utekla.",
+                        lock_duration=300,
+                        force=True
+                    )
+
+        # 2. Kontrola otevřené pozice – pokud se 1. polovina (TP1) vyplnila, posuneme SL 2. poloviny na Break-Even
+        if len(pend_list) == 0:
+            pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
+            pos_list = pos.get("data", []) if isinstance(pos, dict) else []
+            for p in pos_list:
+                pos_sz = abs(float(p.get("pos", "0") or 0.0))
+                avg_px = float(p.get("avgPx", "0") or 0.0)
+                if pos_sz <= 0 or avg_px <= 0:
+                    continue
+
+                expected_full_ct = int((1000.0 / avg_px) / ct_val)
+                if expected_full_ct >= 2 and pos_sz <= (expected_full_ct * 0.65):
+                    be_px_str = str(int(round(avg_px)))
+                    for algo_type in ["oco", "conditional"]:
+                        algos = _okx_signed_request("GET", f"/api/v5/trade/orders-algo-pending?instId={inst_id}&ordType={algo_type}")
+                        algo_list = algos.get("data", []) if isinstance(algos, dict) else []
+                        for al in algo_list:
+                            algo_id = str(al.get("algoId", ""))
+                            curr_sl = float(al.get("slTriggerPx", "0") or 0.0)
+                            if not algo_id or algo_id in ENGINE["be_moved_algos"]:
+                                continue
+                            if abs(curr_sl - avg_px) > 3.0:
+                                amend_body = json.dumps({
+                                    "instId": inst_id,
+                                    "algoId": algo_id,
+                                    "newSlTriggerPx": be_px_str,
+                                    "newSlOrdPx": "-1"
+                                })
+                                am_res = _okx_signed_request("POST", "/api/v5/trade/amend-algos", amend_body)
+                                if str(am_res.get("code")) == "0":
+                                    ENGINE["be_moved_algos"].add(algo_id)
+                                    odesli_upozorneni(
+                                        f"BE_{algo_id}",
+                                        "AI AGENT: STOP-LOSS POSUNUT NA BREAK-EVEN",
+                                        f"🛡️ TP1 (první 50 % pozice) byl zasažen!\nStop-Loss zbývající poloviny pozice byl automaticky posunut na vstupní cenu Break-Even: <b>{be_px_str}$</b>.",
+                                        lock_duration=300,
+                                        force=True
+                                    )
+    except Exception:
+        pass
+
 # --- INTERNÍ AI AGENT (PŘÍMÁ MAKER POST-ONLY EXEKUCE NA OKX V5) ---
 def execute_okx_agent_trade(plan):
     if not OKX_SECRETS.get("ENABLED"):
@@ -98,7 +228,6 @@ def execute_okx_agent_trade(plan):
     try:
         api_key = OKX_SECRETS["API_KEY"]
         sec_key = OKX_SECRETS["SECRET_KEY"]
-        passphrase = OKX_SECRETS["PASSPHRASE"]
         inst_id = OKX_SECRETS["INST_ID"]
         ct_val = OKX_SECRETS["CONTRACT_BTC"]
         base_url = "https://eea.okx.com"
@@ -106,38 +235,20 @@ def execute_okx_agent_trade(plan):
         if not api_key or not sec_key:
             return "🤖 AI Agent: Chybí API klíče v Secrets!"
 
-        def okx_req(method, path, body=""):
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-            msg = ts + method + path + body
-            mac = hmac.new(bytes(sec_key, "utf-8"), bytes(msg, "utf-8"), digestmod=hashlib.sha256)
-            sign = base64.b64encode(mac.digest()).decode("utf-8")
-            headers = {
-                "Content-Type": "application/json",
-                "OK-ACCESS-KEY": api_key,
-                "OK-ACCESS-SIGN": sign,
-                "OK-ACCESS-TIMESTAMP": ts,
-                "OK-ACCESS-PASSPHRASE": passphrase,
-                "x-simulated-trading": "0"
-            }
-            if method == "GET":
-                return requests.get(base_url + path, headers=headers, timeout=5).json()
-            else:
-                return requests.post(base_url + path, headers=headers, data=body, timeout=5).json()
-
         # 1. Kontrola otevřených pozic
-        pos = okx_req("GET", f"/api/v5/account/positions?instId={inst_id}")
+        pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
         if pos.get("data") and len(pos["data"]) > 0:
             for p in pos["data"]:
                 if abs(float(p.get("pos", "0"))) > 0:
                     return "🤖 AI Agent: Zamítnuto (Už existuje otevřená pozice)"
 
         # 2. Kontrola čekajících limit příkazů
-        pend = okx_req("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
+        pend = _okx_signed_request("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
         if pend.get("data") and len(pend["data"]) > 0:
             return "🤖 AI Agent: Zamítnuto (Už existuje čekající limitka)"
 
         # 3. Nastavení páky 10x (Isolated)
-        okx_req("POST", "/api/v5/account/set-leverage", json.dumps({
+        _okx_signed_request("POST", "/api/v5/account/set-leverage", json.dumps({
             "instId": inst_id,
             "lever": "10",
             "mgnMode": "isolated"
@@ -192,7 +303,7 @@ def execute_okx_agent_trade(plan):
                     "tpOrdPx": str(int(round(tp_px)))
                 }]
             }
-            return okx_req("POST", "/api/v5/trade/order", json.dumps(body))
+            return _okx_signed_request("POST", "/api/v5/trade/order", json.dumps(body))
 
         r1 = place_ord(ct1, plan["tp1_limit_50pct"])
         r2 = place_ord(ct2, plan["tp2_limit_50pct"])
@@ -204,30 +315,6 @@ def execute_okx_agent_trade(plan):
 
     except Exception as e:
         return f"⚠️ AI AGENT VÝJIMKA: {str(e)}"
-
-def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False):
-    now_ts = time.time()
-    with ENGINE["lock"]:
-        history = _load_alert_history()
-        if not force:
-            last_lock = float(history.get(lock_key, 0.0))
-            if (now_ts - last_lock) < lock_duration:
-                return False
-        history[lock_key] = now_ts
-        _save_alert_history(history)
-
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": f"🚨 <b>{setup_nazev}</b>\n\n{detail_zpravy}",
-            "parse_mode": "HTML"
-        }
-        res = requests.post(url, json=payload, timeout=5)
-        return res.status_code == 200
-    except Exception as e:
-        print(f"Telegram alert selhal: {e}")
-        return False
 
 def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label):
     if direction == "SHORT":
@@ -535,7 +622,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
 
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Exaktní 1M Wick CVD + Post-Only (SL {SL_PCT*100:.2f}%)"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Bod A->B->C + Auto-BE + 15m TTL (SL {SL_PCT*100:.2f}%)"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -649,6 +736,8 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
+# === KONEC ČÁSTI 1 ===# === ZAČÁTEK ČÁSTI 2 ===
+
 def compute_single_1m_delta(m_candle, is_spot=False):
     m_ts = int(m_candle[0])
     with ENGINE["lock"]:
@@ -719,27 +808,28 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
-# --- EXEKUČNÍ ENGINE PRO SETUP 1: STRIKTNÍ 1M STRUKTURA (BEZ 5 BTC ZKRATKY) + PULLBACK 0.12 % ---
-def evaluate_setup1_1m_entry(direction, c1f, c1s, btc_price, upper_p, lower_p, setup_label):
-    mf = c1f[:20][::-1] if len(c1f) >= 20 else c1f[::-1]
-    ms = c1s[:20][::-1] if len(c1s) >= 20 else c1s[::-1]
+# --- EXEKUČNÍ ENGINE SETUPU 1: BOD A (T_confirm) -> BOD B (Dynamický 1M Swing Break po T_confirm) -> BOD C (0.12% PB) ---
+def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, upper_p, lower_p, setup_label):
+    mf = c1f[:45][::-1] if len(c1f) >= 45 else c1f[::-1]
+    ms = c1s[:45][::-1] if len(c1s) >= 45 else c1s[::-1]
 
-    if len(mf) < 8:
+    if len(mf) < 10:
         pl = build_trade_plan(direction, btc_price, upper_p, lower_p, setup_label)
-        return False, "⏳ Čekám na 1M strukturu...", pl
+        return False, "⏳ Čekám na 1M data...", pl
 
-    n = min(len(mf), len(ms)) if len(ms) >= 8 else len(mf)
+    n = min(len(mf), len(ms)) if len(ms) >= 10 else len(mf)
     mf = mf[-n:]
     ms = ms[-n:] if len(ms) >= n else mf
 
     cf, cs, rf, rs = [], [], 0.0, 0.0
-    o1, h1, l1, c1 = [], [], [], []
+    ts_list, o1, h1, l1, c1 = [], [], [], [], []
 
     for i in range(n):
         rf += compute_single_1m_delta(mf[i], is_spot=False)
         rs += compute_single_1m_delta(ms[i], is_spot=True)
         cf.append(rf)
         cs.append(rs)
+        ts_list.append(int(mf[i][0]))
         o1.append(float(mf[i][1]))
         h1.append(float(mf[i][2]))
         l1.append(float(mf[i][3]))
@@ -749,66 +839,93 @@ def evaluate_setup1_1m_entry(direction, c1f, c1s, btc_price, upper_p, lower_p, s
     h1[-1] = max(h1[-1], btc_price)
     l1[-1] = min(l1[-1], btc_price)
 
+    # Nalezení indexu Bod A (T_confirm) na 1M ose
+    c_idx = 3
+    for idx, t_val in enumerate(ts_list):
+        if t_val <= confirm_1m_ts:
+            c_idx = idx
+    c_idx = max(3, min(c_idx, n - 1))
+
+    # Pomocná funkce: najde poslední 1M Swing před T_confirm a po T_confirm jej buď prorazí, nebo přepíše novým swingem
+    def _track_dynamic_1m_ms_break(series, is_bullish):
+        lookback_start = max(1, c_idx - 10)
+        ref_level = None
+
+        # 1. Zaznamenání posledního High/Low těsně před T_confirm
+        for k in range(c_idx - 1, lookback_start - 1, -1):
+            if is_bullish:
+                if series[k] >= series[k - 1] and series[k] >= series[k + 1]:
+                    ref_level = series[k]
+                    break
+            else:
+                if series[k] <= series[k - 1] and series[k] <= series[k + 1]:
+                    ref_level = series[k]
+                    break
+
+        if ref_level is None:
+            pre_slice = series[max(0, c_idx - 6):c_idx + 1]
+            ref_level = max(pre_slice) if is_bullish else min(pre_slice)
+
+        # 2. Sledování vývoje VÝHRADNĚ PO T_confirm (k > c_idx)
+        for k in range(c_idx + 1, n):
+            if is_bullish:
+                # Průraz aktuálně platného High -> Bod B potvrzen!
+                if series[k] > ref_level:
+                    return True, k, ref_level
+                # Pokud vzniklo po T_confirm nové lokální High, které neprorazilo staré, přepíše staré v paměti
+                if (k - 1) > c_idx and series[k - 1] > series[k - 2] and series[k] < series[k - 1]:
+                    ref_level = series[k - 1]
+            else:
+                # Průraz aktuálně platného Low -> Bod B potvrzen!
+                if series[k] < ref_level:
+                    return True, k, ref_level
+                # Pokud vzniklo po T_confirm nové lokální Low, které neprorazilo staré, přepíše staré v paměti
+                if (k - 1) > c_idx and series[k - 1] < series[k - 2] and series[k] > series[k - 1]:
+                    ref_level = series[k - 1]
+
+        return False, -1, ref_level
+
     trg = False
     txt = ""
     plan_entry = btc_price
+    confirm_dt_str = datetime.fromtimestamp(confirm_1m_ts / 1000, get_prague_now().tzinfo).strftime("%H:%M")
 
     if direction == "SHORT":
-        # Najdeme 1M vrchol (HH) v okně (mimo poslední svíčku, aby byl prostor pro LL a pullback)
-        hh_f_idx = max(range(2, n - 1), key=lambda k: cf[k])
-        prev_swing_low_f = min(cf[:hh_f_idx])
-        post_low_f = min(cf[hh_f_idx + 1:])
-        ll_f_idx = (hh_f_idx + 1) + cf[hh_f_idx + 1:].index(post_low_f)
-        strict_cvd_ll = (prev_swing_low_f < cf[hh_f_idx]) and (post_low_f < prev_swing_low_f)
+        f_ok, f_brk_idx, f_ref = _track_dynamic_1m_ms_break(cf, is_bullish=False)
+        s_ok, s_brk_idx, s_ref = _track_dynamic_1m_ms_break(cs, is_bullish=False)
 
-        hh_s_idx = max(range(2, n - 1), key=lambda k: cs[k])
-        prev_swing_low_s = min(cs[:hh_s_idx])
-        post_low_s = min(cs[hh_s_idx + 1:])
-        ll_s_idx = (hh_s_idx + 1) + cs[hh_s_idx + 1:].index(post_low_s)
-        strict_spot_ll = (prev_swing_low_s < cs[hh_s_idx]) and (post_low_s < prev_swing_low_s)
-
-        if strict_cvd_ll or strict_spot_ll:
-            ref_ll_idx = ll_f_idx if strict_cvd_ll else ll_s_idx
-            flow_src = "1M CVD" if strict_cvd_ll else "1M SPOT"
-            trough_p = min(l1[max(0, ref_ll_idx - 1):ref_ll_idx + 1])
-            lmt_p = trough_p * (1.0 + PB_1M_PCT)  # 0.12 % pullback nahoru
+        if f_ok or s_ok:
+            ref_ll_idx = f_brk_idx if f_ok else s_brk_idx
+            flow_src = "1M CVD" if f_ok else "1M SPOT"
+            trough_p = min(l1[ref_ll_idx:])
+            lmt_p = trough_p * (1.0 + PB_1M_PCT)  # Bod C: 0.12 % pullback nahoru po 1M LL
             plan_entry = lmt_p
-            if btc_price >= lmt_p or max(h1[ref_ll_idx:]) >= lmt_p:
+            if btc_price >= lmt_p or (ref_ll_idx + 1 < n and max(h1[ref_ll_idx + 1:]) >= lmt_p):
                 trg = True
                 plan_entry = max(btc_price, lmt_p)
-                txt = f"✅ MAKER SHORT AKTIVOVÁN ({flow_src} striktní LL + PB {PB_1M_PCT*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER SHORT AKTIVOVÁN (Potvrzeno {confirm_dt_str} -> {flow_src} LL + PB {PB_1M_PCT*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
-                txt = f"⏳ {flow_src} potvrdilo striktní LL – čekám na 0.12% pullback nahoru na {lmt_p:.0f}$"
+                txt = f"⏳ Bod B splněn ({flow_src} LL po {confirm_dt_str}) – čekám na Bod C (0.12% PB nahoru na {lmt_p:.0f}$)"
         else:
-            txt = "⏳ Detekce 1M: Hledám striktní průraz 1M Lower Low po HH (bez zkratky)"
+            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (průraz 1M CVD/Spot Low po {confirm_dt_str})"
     else:
-        # LONG: Najdeme 1M dno (LL) a po něm striktní průraz předchozího swing high (skutečné HH)
-        ll_f_idx = min(range(2, n - 1), key=lambda k: cf[k])
-        prev_swing_high_f = max(cf[:ll_f_idx])
-        post_high_f = max(cf[ll_f_idx + 1:])
-        hh_f_idx = (ll_f_idx + 1) + cf[ll_f_idx + 1:].index(post_high_f)
-        strict_cvd_hh = (prev_swing_high_f > cf[ll_f_idx]) and (post_high_f > prev_swing_high_f)
+        f_ok, f_brk_idx, f_ref = _track_dynamic_1m_ms_break(cf, is_bullish=True)
+        s_ok, s_brk_idx, s_ref = _track_dynamic_1m_ms_break(cs, is_bullish=True)
 
-        ll_s_idx = min(range(2, n - 1), key=lambda k: cs[k])
-        prev_swing_high_s = max(cs[:ll_s_idx])
-        post_high_s = max(cs[ll_s_idx + 1:])
-        hh_s_idx = (ll_s_idx + 1) + cs[ll_s_idx + 1:].index(post_high_s)
-        strict_spot_hh = (prev_swing_high_s > cs[ll_s_idx]) and (post_high_s > prev_swing_high_s)
-
-        if strict_cvd_hh or strict_spot_hh:
-            ref_hh_idx = hh_f_idx if strict_cvd_hh else hh_s_idx
-            flow_src = "1M CVD" if strict_cvd_hh else "1M SPOT"
-            peak_p = max(h1[max(0, ref_hh_idx - 1):ref_hh_idx + 1])
-            lmt_p = peak_p * (1.0 - PB_1M_PCT)  # 0.12 % pullback dolů
+        if f_ok or s_ok:
+            ref_hh_idx = f_brk_idx if f_ok else s_brk_idx
+            flow_src = "1M CVD" if f_ok else "1M SPOT"
+            peak_p = max(h1[ref_hh_idx:])
+            lmt_p = peak_p * (1.0 - PB_1M_PCT)  # Bod C: 0.12 % pullback dolů po 1M HH
             plan_entry = lmt_p
-            if btc_price <= lmt_p or min(l1[ref_hh_idx:]) <= lmt_p:
+            if btc_price <= lmt_p or (ref_hh_idx + 1 < n and min(l1[ref_hh_idx + 1:]) <= lmt_p):
                 trg = True
                 plan_entry = min(btc_price, lmt_p)
-                txt = f"✅ MAKER LONG AKTIVOVÁN ({flow_src} striktní HH + PB {PB_1M_PCT*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER LONG AKTIVOVÁN (Potvrzeno {confirm_dt_str} -> {flow_src} HH + PB {PB_1M_PCT*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
-                txt = f"⏳ {flow_src} potvrdilo striktní HH – čekám na 0.12% pullback dolů na {lmt_p:.0f}$"
+                txt = f"⏳ Bod B splněn ({flow_src} HH po {confirm_dt_str}) – čekám na Bod C (0.12% PB dolů na {lmt_p:.0f}$)"
         else:
-            txt = "⏳ Detekce 1M: Hledám striktní průraz 1M Higher High po LL (bez zkratky)"
+            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (průraz 1M CVD/Spot High po {confirm_dt_str})"
 
     pl = build_trade_plan(direction, plan_entry, upper_p, lower_p, setup_label)
     pl["trigger_ready"] = trg
@@ -1052,22 +1169,35 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: ODDĚLENÉ PIVOTY + EXAKTNÍ 1M WICK CVD + PRAVIDLO 13:09 + 1M STRICT ENTRY ---
+# --- SETUP 1: ODDĚLENÉ PIVOTY + EXAKTNÍ 1M WICK CVD + PRAVIDLO 13:09 + PAMĚŤ T_confirm -> 1M BREAK -> 0.12% PB ---
 def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p):
     try:
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
         if rem_s1 > 0:
+            with ENGINE["lock"]:
+                ENGINE["s1_memory"]["active"] = False
             return f"🔒 Setup 1 uzamčen na 1H (zbývá {rem_s1 // 60 + 1} min) | Setup 2 povolen.", False
 
         if len(c_12_asc) < 12 or len(cvd_12) < 12 or len(scvd_12) < 12:
             return "Načítám strukturu svíček...", False
+
+        now_sec = time.time()
+        with ENGINE["lock"]:
+            mem = ENGINE["s1_memory"]
+            if mem["active"]:
+                # Expirace paměti po 20 minutách nebo při cenovém průrazu zóny o > 0.15 %
+                if (now_sec - mem["locked_at_sec"]) > S1_MEMORY_TTL_SEC:
+                    mem["active"] = False
+                elif mem["direction"] == "SHORT" and btc_price > mem["zone_extreme_p"] * 1.0015:
+                    mem["active"] = False
+                elif mem["direction"] == "LONG" and btc_price < mem["zone_extreme_p"] * 0.9985:
+                    mem["active"] = False
 
         highs = [float(c[2]) for c in c_12_asc]
         lows = [float(c[3]) for c in c_12_asc]
         closes = [float(c[4]) for c in c_12_asc]
         timestamps = [int(c[0]) for c in c_12_asc]
 
-        # Sestavení 1M kumulativní mapy pro exaktní odečet v minutě knotu
         start_ts = timestamps[0]
         cum_f_1m, cum_s_1m = {}, {}
         rc, rs = 0.0, 0.0
@@ -1086,6 +1216,12 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
         min_all_l = min(lows)
         prefix = "" if liquid_ok else "⏸️ "
 
+        detected_dir = None
+        detected_label = ""
+        detected_header = ""
+        detected_confirm_ts = 0
+        detected_zone_p = 0.0
+
         # 1) BEARISH EQUAL HIGHS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, 1M Wick CVD)
         if max_all_h > 0:
             top_zone_floor = max_all_h * (1.0 - 0.0010)
@@ -1103,7 +1239,6 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                 best_k = max(curr_cluster, key=lambda idx: highs[idx])
                 high_pivots.append(best_k)
 
-            # Musí existovat alespoň 3 oddělené doteky (prvotní + min. 2 retesty) a poslední dotek je aktivní
             if len(high_pivots) >= 3 and high_pivots[-1] >= 10:
                 earliest_idx = high_pivots[0]
                 last_idx = high_pivots[-1]
@@ -1125,16 +1260,15 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                             s_diff = get_cum_val_at_ts(cum_s_1m, tm_last) - get_cum_val_at_ts(cum_s_1m, tm_start)
                             if (c_diff > 50.0) or (s_diff > 10.0 and c_diff >= -10.0):
                                 pb_pct = ((highs[start_idx] - min_pb_low) / highs[start_idx]) * 100.0
-                                entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQUAL HIGHS")
-                                msg = f"{prefix}🔥 BEARISH EQUAL HIGHS ({retests_count}x oddělený retest ≤0.10% | PB {pb_pct:.2f}% | 1M Wick CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
-                                if liquid_ok and entry_ok:
-                                    agent_msg = execute_okx_agent_trade(t_payload)
-                                    msg += f"\n{agent_msg}"
-                                    odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT MAKER ENTRY", msg, lock_duration=3600)
-                                return msg, bool(liquid_ok and entry_ok)
+                                detected_dir = "SHORT"
+                                detected_label = "SETUP 1: BEARISH EQUAL HIGHS"
+                                detected_header = f"🔥 BEARISH EQUAL HIGHS ({retests_count}x oddělený retest ≤0.10% | PB {pb_pct:.2f}% | 1M Wick CVD {c_diff:+.1f} / Spot {s_diff:+.1f})"
+                                detected_confirm_ts = tm_last
+                                detected_zone_p = max_all_h
+                                break
 
         # 2) BULLISH EQUAL LOWS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, 1M Wick CVD)
-        if min_all_l > 0:
+        if detected_dir is None and min_all_l > 0:
             bot_zone_ceil = min_all_l * (1.0 + 0.0010)
             low_pivots = []
             curr_cluster = []
@@ -1171,44 +1305,78 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                             s_diff = get_cum_val_at_ts(cum_s_1m, tm_last) - get_cum_val_at_ts(cum_s_1m, tm_start)
                             if (c_diff < -50.0) or (s_diff < -10.0 and c_diff <= 10.0):
                                 pb_pct = ((max_pb_high - lows[start_idx]) / lows[start_idx]) * 100.0
-                                entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQUAL LOWS")
-                                msg = f"{prefix}🔥 BULLISH EQUAL LOWS ({retests_count}x oddělený retest ≤0.10% | PB {pb_pct:.2f}% | 1M Wick CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
-                                if liquid_ok and entry_ok:
-                                    agent_msg = execute_okx_agent_trade(t_payload)
-                                    msg += f"\n{agent_msg}"
-                                    odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG MAKER ENTRY", msg, lock_duration=3600)
-                                return msg, bool(liquid_ok and entry_ok)
+                                detected_dir = "LONG"
+                                detected_label = "SETUP 1: BULLISH EQUAL LOWS"
+                                detected_header = f"🔥 BULLISH EQUAL LOWS ({retests_count}x oddělený retest ≤0.10% | PB {pb_pct:.2f}% | 1M Wick CVD {c_diff:+.1f} / Spot {s_diff:+.1f})"
+                                detected_confirm_ts = tm_last
+                                detected_zone_p = min_all_l
+                                break
 
         # 3) ÚZKÝ RANGE (Min. 5 svíček, Knot-to-Knot <= 0.15 %)
-        for win in range(5, 13):
-            sub_h = highs[-win:]
-            sub_l = lows[-win:]
-            ref_price = closes[-1] if closes[-1] > 0 else 75000.0
-            wick_spread_pct = ((max(sub_h) - min(sub_l)) / ref_price) * 100.0
+        if detected_dir is None:
+            for win in range(5, 13):
+                sub_h = highs[-win:]
+                sub_l = lows[-win:]
+                ref_price = closes[-1] if closes[-1] > 0 else 75000.0
+                wick_spread_pct = ((max(sub_h) - min(sub_l)) / ref_price) * 100.0
 
-            if wick_spread_pct <= 0.15:
-                c_sum = sum(cvd_12[-win:])
-                s_sum = sum(scvd_12[-win:])
+                if wick_spread_pct <= 0.15:
+                    c_sum = sum(cvd_12[-win:])
+                    s_sum = sum(scvd_12[-win:])
+                    latest_1m_ts = int(candles_1m_fut[0][0]) if candles_1m_fut else timestamps[-1]
 
-                if (c_sum > 50.0) or (s_sum > 10.0 and c_sum >= -10.0):
-                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH ÚZKÝ RANGE")
-                    msg = f"{prefix}🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
-                    if liquid_ok and entry_ok:
-                        agent_msg = execute_okx_agent_trade(t_payload)
-                        msg += f"\n{agent_msg}"
-                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT MAKER ENTRY (RANGE)", msg, lock_duration=3600)
-                    return msg, bool(liquid_ok and entry_ok)
+                    if (c_sum > 50.0) or (s_sum > 10.0 and c_sum >= -10.0):
+                        detected_dir = "SHORT"
+                        detected_label = "SETUP 1: BEARISH ÚZKÝ RANGE"
+                        detected_header = f"🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})"
+                        detected_confirm_ts = latest_1m_ts
+                        detected_zone_p = max(sub_h)
+                        break
 
-                if (c_sum < -50.0) or (s_sum < -10.0 and c_sum <= 10.0):
-                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH ÚZKÝ RANGE")
-                    msg = f"{prefix}🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
-                    if liquid_ok and entry_ok:
-                        agent_msg = execute_okx_agent_trade(t_payload)
-                        msg += f"\n{agent_msg}"
-                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG MAKER ENTRY (RANGE)", msg, lock_duration=3600)
-                    return msg, bool(liquid_ok and entry_ok)
+                    if (c_sum < -50.0) or (s_sum < -10.0 and c_sum <= 10.0):
+                        detected_dir = "LONG"
+                        detected_label = "SETUP 1: BULLISH ÚZKÝ RANGE"
+                        detected_header = f"🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})"
+                        detected_confirm_ts = latest_1m_ts
+                        detected_zone_p = min(sub_l)
+                        break
 
-        return "Skenuji Setup 1 (Oddělené pivoty ≤0.10%, 1M Wick CVD, 13:09 filtr, 1M HH/LL + 0.12% PB)...", False
+        # Uložení Bodu A (T_confirm) do paměti, pokud ještě neběží
+        with ENGINE["lock"]:
+            mem = ENGINE["s1_memory"]
+            if detected_dir is not None:
+                if not mem["active"] or mem["direction"] != detected_dir:
+                    mem["active"] = True
+                    mem["direction"] = detected_dir
+                    mem["setup_label"] = detected_label
+                    mem["header_text"] = detected_header
+                    mem["confirm_1m_ts"] = detected_confirm_ts
+                    mem["locked_at_sec"] = now_sec
+                    mem["zone_extreme_p"] = detected_zone_p
+                else:
+                    mem["header_text"] = detected_header
+
+            is_mem_active = mem["active"]
+            active_dir = mem["direction"]
+            active_label = mem["setup_label"]
+            active_header = mem["header_text"]
+            active_confirm_ts = mem["confirm_1m_ts"]
+
+        # Pokud je Bod A aktivní (buď právě detekovaný, nebo držený v 20min paměti), vyhodnotíme Bod B a Bod C na 1M grafu
+        if is_mem_active:
+            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
+                active_dir, active_confirm_ts, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, active_label
+            )
+            msg = f"{prefix}{active_header}\n{entry_txt}"
+            if liquid_ok and entry_ok:
+                agent_msg = execute_okx_agent_trade(t_payload)
+                msg += f"\n{agent_msg}"
+                with ENGINE["lock"]:
+                    ENGINE["s1_memory"]["active"] = False
+                odesli_upozorneni("S1_LOCK_1H", f"SETUP 1: {active_dir} MAKER ENTRY", msg, lock_duration=3600)
+            return msg, bool(liquid_ok and entry_ok)
+
+        return "Skenuji Setup 1 (Oddělené pivoty ≤0.10%, 1M Wick CVD, 13:09 filtr, Bod A -> Bod B -> 0.12% PB)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
@@ -1354,6 +1522,7 @@ def start_background_guardian():
             try:
                 poll_realtime_okx_flow()
                 if tick % 3 == 0:
+                    manage_active_okx_lifecycle()
                     liq_ok, _ = check_liquid_hours()
                     if liq_ok:
                         data = fetch_okx_data()
@@ -1562,11 +1731,11 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1: ABSORPCE (1M WICK CVD | 13:09 FILTR | 1M HH/LL + 0.12% PB)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1: ABSORPCE (1M WICK CVD | 13:09 FILTR | BOD A->B->C + 0.12% PB)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: MACRO SFP (MAKER LIMIT 0.05% | SL 0.30% | POST-ONLY)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: MACRO SFP (MAKER LIMIT 0.05% | SL 0.30% | AUTO-BE)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2.replace(chr(10), "<br>")}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -1599,7 +1768,7 @@ if st.button("📲 OTESTOVAT TELEGRAM & AI AGENTA"):
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ TERMINÁL + AI AGENT",
-        f"✅ Vše běží v Post-Only (Maker) režimu na 1M exaktní křivce!\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
+        f"✅ Vše běží v Post-Only (Maker) režimu s pamětí Bod A->B->C, Auto-BE a 15m TTL!\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
         force=True
     )
     if ok:
