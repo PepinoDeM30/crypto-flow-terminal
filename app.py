@@ -722,7 +722,7 @@ def evaluate_setup1_1m_entry(direction, c1f, c1s, btc_price, upper_p, lower_p, s
     plan_entry = btc_price
 
     if direction == "SHORT":
-        # Striktní Lower Low na CVD bez jakýchkoliv zkratek (CVD musí propadnout pod lokální min.)
+        # Striktní Lower Low na CVD
         hh_idx = cf.index(max(cf))
         prev_low = min(cf[:hh_idx+1]) if hh_idx > 0 else cf[hh_idx]
         post_low = min(cf[hh_idx:])
@@ -1123,7 +1123,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             direction = "SHORT" if is_high else "LONG"
                             t_payload = build_trade_plan(direction, limit_entry_p, upper_p, lower_p, f"SETUP 2: SFP {name} {direction}")
                             t_payload["trigger_ready"] = True
-                            entry_txt = f"✅ LIMIT {'SHORT' if is_h else 'LONG'} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL Mkt: {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
+                            entry_txt = f"✅ LIMIT {'SHORT' if is_high else 'LONG'} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL Mkt: {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
                             msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
                             if liquid_ok:
                                 agent_msg = execute_okx_agent_trade(t_payload)
@@ -1294,7 +1294,7 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
         fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[poc_1h, poc_1h], mode="lines", line=dict(color="#f7931a", width=2.2), hoverinfo="skip", showlegend=False), row=1, col=1)
         fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[val_1h, val_1h], mode="lines", line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"), hoverinfo="skip", showlegend=False), row=1, col=1)
 
-    fig.add_trace(go.Candlestick(x=x_axis, open=[float(c[1]) for c in c_12_asc], high=[float(c[2]) for c in c_12_asc], low=[float(c[3]) for c in c_12_asc], close=[float(c[4]) for c_12_asc], increasing_line_color="#3fb950", decreasing_line_color="#f85149", increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149", increasing_line_width=1.8, decreasing_line_width=1.8, whiskerwidth=0.3, showlegend=False), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=x_axis, open=[float(c[1]) for c in c_12_asc], high=[float(c[2]) for c in c_12_asc], low=[float(c[3]) for c in c_12_asc], close=[float(c[4]) for c in c_12_asc], increasing_line_color="#3fb950", decreasing_line_color="#f85149", increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149", increasing_line_width=1.8, decreasing_line_width=1.8, whiskerwidth=0.3, showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=[-0.8, 13.6], y=[b_price, b_price], mode="lines", line=dict(color="rgba(0, 243, 255, 0.55)", width=1.4, dash="dot"), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=[11.0], y=[b_price], mode="markers", marker=dict(color="#00f3ff", size=7, line=dict(color="#ffffff", width=1.5)), hoverinfo="skip", showlegend=False), row=1, col=1)
     
