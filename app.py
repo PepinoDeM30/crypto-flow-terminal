@@ -13,6 +13,9 @@ from plotly.subplots import make_subplots
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
 
+# --- PŘÍPRAVA PRO NAPOJENÍ NA GOOGLE SHEET OKX AI AGENTA (WEBHOOK) ---
+GOOGLE_SHEET_WEBHOOK_URL = ""
+
 # --- TRVALÁ PAMĚŤ SERVERU (PROTI SPAMU + ŽIVÝ SBĚR OBCHODŮ, OI A LIKVIDACÍ) ---
 @st.cache_resource
 def get_realtime_engine():
@@ -37,7 +40,16 @@ def get_realtime_engine():
 
 ENGINE = get_realtime_engine()
 
-def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key=None, category_cooldown=1200, force=False):
+def odesli_do_google_sheet_agenta(payload_data):
+    if not GOOGLE_SHEET_WEBHOOK_URL:
+        return False
+    try:
+        res = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload_data, timeout=5)
+        return res.status_code == 200
+    except Exception:
+        return False
+
+def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key=None, category_cooldown=1200, force=False, trade_payload=None):
     now_ts = time.time()
     with ENGINE["lock"]:
         if not force:
@@ -51,6 +63,9 @@ def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=360
         ENGINE["sent_alerts"][setup_id_key] = now_ts
         if category_key:
             ENGINE["sent_alerts"][category_key] = now_ts
+
+    if trade_payload is not None:
+        odesli_do_google_sheet_agenta(trade_payload)
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -360,6 +375,30 @@ def load_trading_data():
     except Exception:
         return 0.0, 0.0
 
+@st.cache_data(ttl=3600)
+def get_contract_spec(inst_id):
+    for inst_type in ["SWAP", "FUTURES"]:
+        for host in ["https://eea.okx.com", "https://www.okx.com"]:
+            try:
+                url = f"{host}/api/v5/public/instruments?instType={inst_type}&instId={inst_id}"
+                data = requests.get(url, timeout=3).json().get("data", [])
+                if data:
+                    ct_val = float(data[0].get("ctVal", 0.0001))
+                    ct_ccy = data[0].get("ctValCcy", "BTC")
+                    return ct_val, ct_ccy
+            except Exception:
+                continue
+    if "UM_XPERP" in inst_id or "USDC" in inst_id:
+        return 0.0001, "BTC"
+    elif "USDT" in inst_id:
+        return 0.01, "BTC"
+    return 100.0, "USD"
+
+def to_btc_vol(raw_contracts, price, ct_val, ct_ccy):
+    if ct_ccy == "BTC":
+        return raw_contracts * ct_val
+    return (raw_contracts * ct_val) / price if price > 0 else 0.0
+
 def get_okx_candles(bar, limit, ts, inst_priority=None):
     if inst_priority is None:
         inst_priority = ["BTC-USD_UM_XPERP-310404", "BTC-USDT-SWAP", "BTC-USD-SWAP"]
@@ -390,6 +429,7 @@ def poll_realtime_okx_flow():
     ts = int(time.time() * 1000)
     curr_5m_open = (ts // 300000) * 300000
 
+    # 1. Živý sběr Futures obchodů (BTC-USDT-SWAP)
     try:
         u_fut = f"https://www.okx.com/api/v5/market/trades?instId=BTC-USDT-SWAP&limit=500&t={ts}"
         trades_f = requests.get(u_fut, timeout=3).json().get("data", [])
@@ -413,6 +453,7 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
+    # 2. Živý sběr Spot obchodů (BTC-USDT)
     try:
         u_spot = f"https://www.okx.com/api/v5/market/trades?instId=BTC-USDT&limit=500&t={ts}"
         trades_s = requests.get(u_spot, timeout=3).json().get("data", [])
@@ -436,6 +477,7 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
+    # 3. Živý Open Interest pro aktuální neuzavřenou 5M svíčku
     try:
         u_oi = f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP&t={ts}"
         oi_data = requests.get(u_oi, timeout=3).json().get("data", [])
@@ -477,6 +519,7 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
+# --- VÝPOČET LIKVIDAČNÍCH MAGNETŮ DO ±2 % OD CENY ---
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     curr_5m_candle = (int(time.time() * 1000) // 300000) * 300000
     with ENGINE["lock"]:
