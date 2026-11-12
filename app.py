@@ -5,6 +5,9 @@ import time
 import uuid
 import threading
 import requests
+import hmac
+import base64
+import hashlib
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -16,12 +19,20 @@ from plotly.subplots import make_subplots
 # --- NASTAVENÍ TELEGRAM NOTIFIKACÍ ---
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v5.json"
 
-# --- SEM VLOŽÍŠ URL SVÉHO GOOGLE APPS SCRIPT AI AGENTA (VIZ NÁVOD NÍŽE) ---
-GOOGLE_SHEET_WEBHOOK_URL = ""
-
-# --- SOUBOROVÝ BUFFER NA DISKU SERVERU (NEZÁVISLÁ 1H STOPKA PRO SETUP 1 A SETUP 2) ---
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v4.json"
+# --- ZABEZPEČENÉ NAČTENÍ OKX API KLÍČŮ ZE STREAMLIT SECRETS ---
+try:
+    OKX_SECRETS = {
+        "API_KEY": st.secrets.get("OKX_API_KEY", ""),
+        "SECRET_KEY": st.secrets.get("OKX_SECRET_KEY", ""),
+        "PASSPHRASE": st.secrets.get("OKX_PASSPHRASE", ""),
+        "INST_ID": st.secrets.get("OKX_INST_ID", "BTC-USD_UM_XPERP-310404"),
+        "CONTRACT_BTC": float(st.secrets.get("OKX_CONTRACT_BTC", "0.0001")),
+        "ENABLED": st.secrets.get("AI_TRADING_ENABLED", "false").lower() == "true"
+    }
+except Exception:
+    OKX_SECRETS = {"ENABLED": False}
 
 @st.cache_resource
 def get_realtime_engine():
@@ -38,13 +49,7 @@ def get_realtime_engine():
         "oi_start_map": {},
         "oi_live_delta": {},
         "last_oi_btc": None,
-        "liq_cache": {
-            "candle_ts": 0,
-            "upper_p": 0.0,
-            "upper_btc": 0.0,
-            "lower_p": 0.0,
-            "lower_btc": 0.0
-        }
+        "liq_cache": {"candle_ts": 0, "upper_p": 0.0, "upper_btc": 0.0, "lower_p": 0.0, "lower_btc": 0.0}
     }
 
 ENGINE = get_realtime_engine()
@@ -75,30 +80,107 @@ def get_setup_cooldown_remaining(lock_key, lock_duration=3600):
             return int(lock_duration - elapsed)
     return 0
 
-def odesli_do_google_sheet_agenta(payload_data):
-    if not GOOGLE_SHEET_WEBHOOK_URL:
-        return False
-    try:
-        res = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload_data, timeout=6)
-        return res.status_code == 200
-    except Exception:
-        return False
+# --- INTERNÍ AI AGENT (PŘÍMÁ EXEKUCE NA OKX V5) ---
+def execute_okx_agent_trade(plan):
+    if not OKX_SECRETS.get("ENABLED"):
+        return "🤖 AI Agent: Exekuce vypnuta (AI_TRADING_ENABLED=false)"
 
-def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False, trade_payload=None):
+    try:
+        api_key = OKX_SECRETS["API_KEY"]
+        sec_key = OKX_SECRETS["SECRET_KEY"]
+        passphrase = OKX_SECRETS["PASSPHRASE"]
+        inst_id = OKX_SECRETS["INST_ID"]
+        ct_val = OKX_SECRETS["CONTRACT_BTC"]
+        base_url = "https://eea.okx.com" 
+
+        if not api_key or not sec_key:
+            return "🤖 AI Agent: Chybí API klíče v Secrets!"
+
+        def okx_req(method, path, body=""):
+            ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            msg = ts + method + path + body
+            mac = hmac.new(bytes(sec_key, 'utf-8'), bytes(msg, 'utf-8'), digestmod=hashlib.sha256)
+            sign = base64.b64encode(mac.digest()).decode('utf-8')
+            headers = {
+                "Content-Type": "application/json",
+                "OK-ACCESS-KEY": api_key,
+                "OK-ACCESS-SIGN": sign,
+                "OK-ACCESS-TIMESTAMP": ts,
+                "OK-ACCESS-PASSPHRASE": passphrase,
+                "x-simulated-trading": "0"
+            }
+            if method == "GET":
+                return requests.get(base_url + path, headers=headers, timeout=5).json()
+            else:
+                return requests.post(base_url + path, headers=headers, data=body, timeout=5).json()
+
+        # 1. Kontrola otevřených pozic
+        pos = okx_req("GET", f"/api/v5/account/positions?instId={inst_id}")
+        if pos.get("data") and len(pos["data"]) > 0:
+            for p in pos["data"]:
+                if abs(float(p.get("pos", "0"))) > 0:
+                    return "🤖 AI Agent: Zamítnuto (Už existuje otevřená pozice)"
+
+        # 2. Kontrola čekajících limit příkazů
+        pend = okx_req("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
+        if pend.get("data") and len(pend["data"]) > 0:
+            return "🤖 AI Agent: Zamítnuto (Už existuje čekající limitka)"
+
+        # 3. Nastavení páky 10x
+        okx_req("POST", "/api/v5/account/set-leverage", json.dumps({"instId": inst_id, "lever": "10", "mgnMode": "isolated"}))
+
+        # 4. Výpočet kontraktů pro pozici 1000 USD (Marže 100 USD * Páka 10x)
+        entry_px = float(plan["entry"])
+        pos_usd = 1000.0
+        total_btc = pos_usd / entry_px
+        total_ct = int(total_btc / ct_val)
+        
+        if total_ct < 2:
+            return "🤖 AI Agent: Zamítnuto (Příliš malý kapitál pro rozdělení 50/50)"
+        
+        ct1 = total_ct // 2
+        ct2 = total_ct - ct1
+        side = plan["side"]
+
+        # 5. Odeslání Limit objednávek s Market SL a Limit TP
+        def place_ord(sz, tp_px):
+            body = {
+                "instId": inst_id,
+                "tdMode": "isolated",
+                "side": side,
+                "ordType": "limit",
+                "px": str(int(entry_px)),
+                "sz": str(sz),
+                "attachAlgoOrds": [{
+                    "slTriggerPx": str(int(plan["sl_market"])),
+                    "slOrdPx": "-1", # -1 = Market
+                    "tpTriggerPx": str(int(tp_px)),
+                    "tpOrdPx": str(int(tp_px)) # Konkrétní cena = Limit
+                }]
+            }
+            return okx_req("POST", "/api/v5/trade/order", json.dumps(body))
+
+        r1 = place_ord(ct1, plan["tp1_limit_50pct"])
+        r2 = place_ord(ct2, plan["tp2_limit_50pct"])
+
+        if str(r1.get("code")) == "0" or str(r2.get("code")) == "0":
+            return f"🤖 AI AGENT: ZADAL 2x LIMIT PŘÍKAZY NA OKX! (Pozice: 1000$ | Páka 10x)"
+        else:
+            return f"⚠️ AI AGENT CHYBA: {r1.get('msg', '')} {r2.get('msg', '')}"
+
+    except Exception as e:
+        return f"⚠️ AI AGENT VÝJIMKA: {str(e)}"
+
+def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False):
     now_ts = time.time()
     with ENGINE["lock"]:
         history = _load_alert_history()
         if not force:
-            # Kontrola nezávislé 1H (3600s) stopky pro daný Setup (S1_LOCK nebo S2_LOCK)
             last_lock = float(history.get(lock_key, 0.0))
             if (now_ts - last_lock) < lock_duration:
                 return False
-
         history[lock_key] = now_ts
         _save_alert_history(history)
-
-    if trade_payload is not None:
-        odesli_do_google_sheet_agenta(trade_payload)
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -419,7 +501,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
     
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Nezávislá 1H ochrana S1/S2 | Pos: 1000$ (100$x10)"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Nezávislá 1H ochrana S1/S2 | AI Agent ON"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -533,33 +615,6 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
-def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, scale_factor=0.18):
-    with ENGINE["lock"]:
-        bucket_map = ENGINE["spot_buckets"] if is_spot else ENGINE["fut_buckets"]
-        real_collected = bucket_map.get(candle_open_ts, 0.0)
-
-    sub_delta = 0.0
-    for m in candles_1m:
-        try:
-            m_ts = int(m[0])
-            if candle_open_ts <= m_ts < candle_open_ts + 300000:
-                o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
-                if h <= l:
-                    continue
-                vol_btc = float(m[5]) if is_spot else float(m[6])
-                body_pressure = (cl - o) / (h - l)
-                wick_pressure = (2.0 * cl - h - l) / (h - l)
-                combined_ratio = 0.60 * body_pressure + 0.40 * wick_pressure
-                sub_delta += vol_btc * combined_ratio * scale_factor
-        except Exception:
-            continue
-
-    if abs(real_collected) > abs(sub_delta) * 0.65:
-        return real_collected
-    if abs(real_collected) > 0.0:
-        return 0.6 * real_collected + 0.4 * sub_delta
-    return sub_delta
-
 def compute_single_1m_delta(m_candle, is_spot=False):
     m_ts = int(m_candle[0])
     with ENGINE["lock"]:
@@ -581,15 +636,38 @@ def compute_single_1m_delta(m_candle, is_spot=False):
         return 0.6 * real_1m + 0.4 * calc_1m
     return calc_1m
 
-# --- EXEKUČNÍ ENGINE PRO SETUP 1: 1M CVD/SPOT PRVNÍ LL/HH + PRVNÍ PULLBACK V CENĚ -> LIMIT ORDER ---
+def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, scale_factor=0.18):
+    with ENGINE["lock"]:
+        bucket_map = ENGINE["spot_buckets"] if is_spot else ENGINE["fut_buckets"]
+        real_collected = bucket_map.get(candle_open_ts, 0.0)
+    sub_delta = 0.0
+    for m in candles_1m:
+        try:
+            m_ts = int(m[0])
+            if candle_open_ts <= m_ts < candle_open_ts + 300000:
+                o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
+                if h <= l:
+                    continue
+                vol_btc = float(m[5]) if is_spot else float(m[6])
+                body_pressure = (cl - o) / (h - l)
+                wick_pressure = (2.0 * cl - h - l) / (h - l)
+                combined_ratio = 0.60 * body_pressure + 0.40 * wick_pressure
+                sub_delta += vol_btc * combined_ratio * scale_factor
+        except Exception:
+            continue
+    if abs(real_collected) > abs(sub_delta) * 0.65:
+        return real_collected
+    if abs(real_collected) > 0.0:
+        return 0.6 * real_collected + 0.4 * sub_delta
+    return sub_delta
+
 def evaluate_setup1_1m_entry(direction, candles_1m_fut, candles_1m_spot, btc_price, upper_liq_p, lower_liq_p, setup_label):
     plan = build_trade_plan(direction, btc_price, upper_liq_p, lower_liq_p, setup_label)
-
     m_fut_asc = candles_1m_fut[:15][::-1] if len(candles_1m_fut) >= 15 else candles_1m_fut[::-1]
     m_spot_asc = candles_1m_spot[:15][::-1] if len(candles_1m_spot) >= 15 else candles_1m_spot[::-1]
 
     if len(m_fut_asc) < 6:
-        return False, f"Čekám na 1M data | Limit: {plan['entry']:.0f}$ | SL (0.25% Mkt): {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$", plan
+        return False, f"Čekám na 1M data | Limit: {plan['entry']:.0f}$ | SL (0.25% Mkt): {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$", plan
 
     n_m = min(len(m_fut_asc), len(m_spot_asc)) if len(m_spot_asc) >= 6 else len(m_fut_asc)
     m_fut_asc = m_fut_asc[-n_m:]
@@ -638,11 +716,11 @@ def evaluate_setup1_1m_entry(direction, candles_1m_fut, candles_1m_spot, btc_pri
             pullback_up = (btc_price > min_p_at_ll + 4.0) or any(closes_1m[k] > opens_1m[k] for k in range(ref_ll_idx, n_m))
             if pullback_up:
                 trigger_fired = True
-                trigger_desc = f"✅ LIMIT SHORT AKTIVOVÁN ({flow_src} 1. LL + pullback) | Vstup: {plan['entry']:.0f}$ (1000$) | SL Mkt: {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$"
+                trigger_desc = f"✅ LIMIT SHORT AKTIVOVÁN ({flow_src} 1. LL + PB) | Vstup: {plan['entry']:.0f}$ (1000$) | SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
             else:
-                trigger_desc = f"⏳ {flow_src} udělalo 1. LL – čekám na 1. pullback ceny pro Limit Short ({plan['entry']:.0f}$)"
+                trigger_desc = f"⏳ {flow_src} udělalo 1. LL – čekám na pullback ceny pro Limit Short ({plan['entry']:.0f}$)"
         else:
-            trigger_desc = f"⏳ Detekce přepnuta na 1M: Hledám 1. LL na 1M CVD/Spotu | Plán SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+            trigger_desc = f"⏳ Detekce 1M: Hledám 1. LL po HH | Plán SL: {plan['sl_market']:.0f}$ | TP2 (Liq): {plan['tp2_limit_50pct']:.0f}$"
     else:
         ll_f_idx = min(range(1, n_m - 1), key=lambda k: cum_f[k])
         prev_high_f = max(cum_f[:ll_f_idx + 1])
@@ -663,13 +741,12 @@ def evaluate_setup1_1m_entry(direction, candles_1m_fut, candles_1m_spot, btc_pri
             pullback_down = (btc_price < max_p_at_hh - 4.0) or any(closes_1m[k] < opens_1m[k] for k in range(ref_hh_idx, n_m))
             if pullback_down:
                 trigger_fired = True
-                trigger_desc = f"✅ LIMIT LONG AKTIVOVÁN ({flow_src} 1. HH + pullback) | Vstup: {plan['entry']:.0f}$ (1000$) | SL Mkt: {plan['sl_market']:.0f}$ | TP1 (50%): {plan['tp1_limit_50pct']:.0f}$ | TP2 (50%): {plan['tp2_limit_50pct']:.0f}$"
+                trigger_desc = f"✅ LIMIT LONG AKTIVOVÁN ({flow_src} 1. HH + PB) | Vstup: {plan['entry']:.0f}$ (1000$) | SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
             else:
-                trigger_desc = f"⏳ {flow_src} udělalo 1. HH – čekám na 1. pullback ceny pro Limit Long ({plan['entry']:.0f}$)"
+                trigger_desc = f"⏳ {flow_src} udělalo 1. HH – čekám na pullback ceny pro Limit Long ({plan['entry']:.0f}$)"
         else:
-            trigger_desc = f"⏳ Detekce přepnuta na 1M: Hledám 1. HH na 1M CVD/Spotu | Plán SL: {plan['sl_market']:.0f}$ | TP1: {plan['tp1_limit_50pct']:.0f}$ | TP2: {plan['tp2_limit_50pct']:.0f}$"
+            trigger_desc = f"⏳ Detekce 1M: Hledám 1. HH po LL | Plán SL: {plan['sl_market']:.0f}$ | TP2 (Liq): {plan['tp2_limit_50pct']:.0f}$"
 
-    plan["trigger_ready"] = trigger_fired
     return trigger_fired, trigger_desc, plan
 
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
@@ -699,7 +776,7 @@ def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     for idx, c in enumerate(recent_asc):
         try:
             c_ts = int(c[0])
-            h, l = float(c[2]), float(c[3])
+            o, h, l, cl = float(c[1]), float(c[2]), float(c[3]), float(c[4])
             vol_btc = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
             oi_ch = oi_change_map.get(c_ts, 0.0)
 
@@ -909,14 +986,12 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: PŘESNÁ LOGIKA (2 RETESTY DO 0.10%, PULLBACK 0.18%, RANGE 0.15% KNOT-KNOT, CVD > 50 / SPOT > 10) ---
+# --- SETUP 1 ---
 def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p):
     try:
-        # 1. Kontrola 1H ochranné stopky pro Setup 1 (Setup 2 zůstává povolený)
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
         if rem_s1 > 0:
-            mins_left = (rem_s1 // 60) + 1
-            return f"🔒 Setup 1 uzamčen po dobu 1H od posledního signálu (zbývá {mins_left} min) | Setup 2 je plně aktivní.", False
+            return f"🔒 Setup 1 uzamčen na 1H (zbývá {rem_s1//60 + 1} min) | Setup 2 povolen.", False
 
         if len(c_12_asc) < 12 or len(cvd_12) < 12 or len(scvd_12) < 12:
             return "Načítám strukturu svíček...", False
@@ -936,9 +1011,8 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
             cum_c.append(cc)
             cum_s.append(cs)
 
-        prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
+        prefix = "" if liquid_ok else "⏸️ "
 
-        # --- 1) EQUAL HIGHS / LOWS (Pullback >= 0.18 %, min. 2 pokusy o retest s knoty do 0.10 %, CVD > 50 nebo Spot > 10 při CVD >= -10) ---
         for i in range(0, 9):
             # A) BEARISH EQUAL HIGHS
             h_init = highs[i]
@@ -956,11 +1030,9 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                         min_pb_low = lows[k]
                     if (h_init - min_pb_low) >= (h_init * 0.0018):
                         pullback_done = True
-                    # Po dosažení pullbacku >= 0.18 % počítáme svíčky, které retestují prvotní high s odchylkou knotu <= 0.10 %
                     if pullback_done and abs(highs[k] - h_init) <= (h_init * 0.0010):
                         retest_indices.append(k)
 
-                # Potřeba minimálně 2 pokusy o retest (celkem 3. test vrcholu) a rozdíl mezi všemi knoty <= 0.10 %
                 if not invalid_break and len(retest_indices) >= 2:
                     all_retest_wicks = [h_init] + [highs[r] for r in retest_indices]
                     if (max(all_retest_wicks) - min(all_retest_wicks)) <= (h_init * 0.0010):
@@ -968,16 +1040,15 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                         c_diff = cum_c[j] - cum_c[i]
                         s_diff = cum_s[j] - cum_s[i]
 
-                        valid_bear_flow = (c_diff > 50.0) or (s_diff > 10.0 and c_diff >= -10.0)
-                        if valid_bear_flow:
+                        valid_bear = (c_diff > 50.0) or (s_diff > 10.0 and c_diff >= -10.0)
+                        if valid_bear:
                             pb_pct = ((h_init - min_pb_low) / h_init) * 100.0
-                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                                "SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQUAL HIGHS"
-                            )
-                            msg = f"{prefix}🔥 BEARISH EQUAL HIGHS ({len(retest_indices)}x retest do 0.10% | Pullback {pb_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH EQUAL HIGHS")
+                            msg = f"{prefix}🔥 BEARISH EQUAL HIGHS ({len(retest_indices)}x retest do 0.10% | PB {pb_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
                             if liquid_ok and entry_ok:
-                                clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
-                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (EQUAL HIGHS)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                                agent_msg = execute_okx_agent_trade(t_payload)
+                                msg += f"\n{agent_msg}"
+                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY", msg, lock_duration=3600)
                             return msg, bool(liquid_ok and entry_ok)
 
             # B) BULLISH EQUAL LOWS
@@ -1006,57 +1077,57 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                         c_diff = cum_c[j] - cum_c[i]
                         s_diff = cum_s[j] - cum_s[i]
 
-                        valid_bull_flow = (c_diff < -50.0) or (s_diff < -10.0 and c_diff <= 10.0)
-                        if valid_bull_flow:
+                        valid_bull = (c_diff < -50.0) or (s_diff < -10.0 and c_diff <= 10.0)
+                        if valid_bull:
                             b_pct = ((max_b_high - l_init) / l_init) * 100.0
-                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                                "LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQUAL LOWS"
-                            )
-                            msg = f"{prefix}🔥 BULLISH EQUAL LOWS ({len(retest_l_indices)}x retest do 0.10% | Pullback {b_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH EQUAL LOWS")
+                            msg = f"{prefix}🔥 BULLISH EQUAL LOWS ({len(retest_l_indices)}x retest do 0.10% | PB {b_pct:.2f}% | CVD {c_diff:+.1f} / Spot {s_diff:+.1f})\n{entry_txt}"
                             if liquid_ok and entry_ok:
-                                clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
-                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (EQUAL LOWS)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                                agent_msg = execute_okx_agent_trade(t_payload)
+                                msg += f"\n{agent_msg}"
+                                odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY", msg, lock_duration=3600)
                             return msg, bool(liquid_ok and entry_ok)
 
-        # --- 2) ÚZKÝ RANGE (Min. 5 svíček, rozdíl KNOT TO KNOT <= 0.15 %, CVD > 50 nebo Spot > 10 při CVD >= -10) ---
+        # 2) ÚZKÝ RANGE
         for win in range(5, 13):
             sub_h = highs[-win:]
             sub_l = lows[-win:]
             ref_price = closes[-1] if closes[-1] > 0 else 75000.0
-            wick_to_wick_spread = max(sub_h) - min(sub_l)
-            wick_spread_pct = (wick_to_wick_spread / ref_price) * 100.0
+            wick_spread_pct = ((max(sub_h) - min(sub_l)) / ref_price) * 100.0
 
-            if wick_to_wick_spread <= (ref_price * 0.0015):
+            if wick_spread_pct <= 0.15:
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
 
                 if (c_sum > 50.0) or (s_sum > 10.0 and c_sum >= -10.0):
-                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                        "SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH ÚZKÝ RANGE"
-                    )
-                    msg = f"{prefix}🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("SHORT", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BEARISH ÚZKÝ RANGE")
+                    msg = f"{prefix}🔥 BEARISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
                     if liquid_ok and entry_ok:
-                        clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
-                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (RANGE)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                        agent_msg = execute_okx_agent_trade(t_payload)
+                        msg += f"\n{agent_msg}"
+                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: SHORT LIMIT ENTRY (RANGE)", msg, lock_duration=3600)
                     return msg, bool(liquid_ok and entry_ok)
 
                 if (c_sum < -50.0) or (s_sum < -10.0 and c_sum <= 10.0):
-                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                        "LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH ÚZKÝ RANGE"
-                    )
-                    msg = f"{prefix}🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})<br><span style='color:#00f3ff;'>{entry_txt}</span>"
+                    entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry("LONG", candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, "SETUP 1: BULLISH ÚZKÝ RANGE")
+                    msg = f"{prefix}🔥 BULLISH ÚZKÝ RANGE (Knot-to-Knot {wick_spread_pct:.2f}% ≤ 0.15% / {win} sv. | CVD {c_sum:+.1f} / Spot {s_sum:+.1f})\n{entry_txt}"
                     if liquid_ok and entry_ok:
-                        clean_tg = msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
-                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (RANGE)", clean_tg, lock_duration=3600, trade_payload=t_payload)
+                        agent_msg = execute_okx_agent_trade(t_payload)
+                        msg += f"\n{agent_msg}"
+                        odesli_upozorneni("S1_LOCK_1H", "SETUP 1: LONG LIMIT ENTRY (RANGE)", msg, lock_duration=3600)
                     return msg, bool(liquid_ok and entry_ok)
 
-        return "Skenuji Setup 1 (Equal H/L: 2x retest ≤0.10%, PB ≥0.18%, CVD>50/Spot>10 | Range: min. 5 sv. knot-knot ≤0.15%)...", False
+        return "Skenuji Setup 1 (EQH/L: 2x retest ≤0.10%, PB ≥0.18%, CVD>50/Spot>10 | Range: min. 5 sv. knot-knot ≤0.15%)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
-# --- SETUP 2: 3 AŽ 9 SVÍČEK VČETNĚ SWEEPU, OI <= -50 BTC, CVD ANOMÁLIE |Δ| >= 100 BTC, LIMIT ENTRY 0.05% Z LEVELU ---
+# --- SETUP 2 ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p):
     try:
+        rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
+        if rem_s2 > 0:
+            return f"🔒 Setup 2 uzamčen na 1H (zbývá {rem_s2//60 + 1} min) | Setup 1 povolen.", False, ""
+
         if len(candles_300) < 20 or len(candles_1h) < 10:
             return "Načítám historii trhu...", False, "Skenuji levely..."
 
@@ -1066,16 +1137,15 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             tz_p = timezone(timedelta(hours=1))
 
         now_prague = datetime.now(tz_p)
+        yesterday_date = now_prague.date() - timedelta(days=1)
         current_date = now_prague.date()
-        yesterday_date = current_date - timedelta(days=1)
 
         pdh, pdl = 0.0, float("inf")
         for c in candles_1h:
             dt = datetime.fromtimestamp(int(c[0]) / 1000, tz_p)
             if dt.date() == yesterday_date:
                 pdh, pdl = max(pdh, float(c[2])), min(pdl, float(c[3]))
-        if pdh == 0.0:
-            pdh, pdl = 0.0, 0.0
+        if pdh == 0.0: pdh, pdl = 0.0, 0.0
 
         all_5m_asc = candles_300[::-1]
         today_candles = []
@@ -1085,79 +1155,41 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         for c in all_5m_asc:
             ts_c = int(c[0])
             dt = datetime.fromtimestamp(ts_c / 1000, tz_p)
-            if dt.date() != current_date:
-                continue
+            if dt.date() != current_date: continue
             today_candles.append((ts_c, float(c[1]), float(c[2]), float(c[3]), float(c[4]), dt.hour))
-            if 1 <= dt.hour < 7:
-                asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
-            elif 9 <= dt.hour < 14:
-                lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
+            if 1 <= dt.hour < 7: asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
+            elif 9 <= dt.hour < 14: lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
 
-        if asia_h == 0.0:
-            asia_h, asia_l = 0.0, 0.0
-        if lon_h == 0.0:
-            lon_h, lon_l = 0.0, 0.0
+        if asia_h == 0.0: asia_h, asia_l = 0.0, 0.0
+        if lon_h == 0.0: lon_h, lon_l = 0.0, 0.0
 
-        raw_levels = [
-            ("PDH", pdh, True, 0),
-            ("PDL", pdl, False, 0),
-            ("ASIA H", asia_h, True, 7),
-            ("ASIA L", asia_l, False, 7),
-            ("LON H", lon_h, True, 14),
-            ("LON L", lon_l, False, 14)
-        ]
-
-        untouched_levels = []
-        for name, val, is_high, valid_from_hour in raw_levels:
-            if val <= 0 or now_prague.hour < valid_from_hour:
-                continue
-            swept = any((tc[5] >= valid_from_hour and ((is_high and tc[2] >= val) or (not is_high and tc[3] <= val))) for tc in today_candles)
-            if not swept:
-                untouched_levels.append(f"{name}: {val:.0f}")
-        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
-
-        # 1. Kontrola 1H ochranné stopky pro Setup 2 (Setup 1 zůstává povolený)
-        rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
-        if rem_s2 > 0:
-            mins_left = (rem_s2 // 60) + 1
-            return f"🔒 Setup 2 uzamčen po dobu 1H od posledního signálu (zbývá {mins_left} min) | Setup 1 je plně aktivní.", False, levels_str
-
+        raw_levels = [("PDH", pdh, True, 0), ("PDL", pdl, False, 0), ("ASIA H", asia_h, True, 7), ("ASIA L", asia_l, False, 7), ("LON H", lon_h, True, 14), ("LON L", lon_l, False, 14)]
         cum_cvd_today = []
         running_cvd = 0.0
         for tc in today_candles:
             running_cvd += fut_map.get(tc[0], 0.0)
             cum_cvd_today.append(running_cvd)
 
+        untouched_levels = [f"{n}: {v:.0f}" for n, v, h, valid in raw_levels if v > 0 and now_prague.hour >= valid and not any(tc[5] >= valid and ((h and tc[2] >= v) or (not h and tc[3] <= v)) for tc in today_candles)]
+        levels_str = " ⚡ ".join(untouched_levels) if untouched_levels else "Všechny aktivní levely už byly vybrány"
+        
         pending_retest_msgs = []
         triggered_msg, is_triggered = None, False
-        prefix = "" if liquid_ok else "⏸️ [Mimo likvidní čas] "
+        prefix = "" if liquid_ok else "⏸️ "
         n_today = len(today_candles)
 
         for name, val, is_high, valid_from_hour in raw_levels:
-            if val <= 0 or now_prague.hour < valid_from_hour:
-                continue
-
-            sweep_idx = None
-            for idx, tc in enumerate(today_candles):
-                if tc[5] < valid_from_hour:
-                    continue
-                if is_high and tc[2] >= val:
-                    sweep_idx = idx
-                    break
-                if not is_high and tc[3] <= val:
-                    sweep_idx = idx
-                    break
-
-            if sweep_idx is None:
-                continue
+            if val <= 0 or now_prague.hour < valid_from_hour: continue
+            sweep_idx = next((idx for idx, tc in enumerate(today_candles) if tc[5] >= valid_from_hour and ((is_high and tc[2] >= val) or (not is_high and tc[3] <= val))), None)
+            if sweep_idx is None: continue
 
             ts_sweep = today_candles[sweep_idx][0]
-            # Limit Entry přesně na 0.05 % ze sweepnutého levelu
-            limit_entry_p = val * (1.0 - 0.0005) if is_high else val * (1.0 + 0.0005)
+            primary_extremum = today_candles[sweep_idx][2] if is_high else today_candles[sweep_idx][3]
+            limit_entry_p = primary_extremum * (1.0 - 0.0005) if is_high else primary_extremum * (1.0 + 0.0005)
+
             cvd_at_sweep = cum_cvd_today[sweep_idx]
             retest_hit = False
 
-            # Konfigurace min. 3 svíčky včetně sweep svíčky (sweep_idx + 2) až max. 9 svíček včetně sweep svíčky (sweep_idx + 8)
             min_r_idx = sweep_idx + 2
             max_r_idx = min(sweep_idx + 8, n_today - 1)
 
@@ -1165,55 +1197,36 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 for r_idx in range(min_r_idx, max_r_idx + 1):
                     tc_r = today_candles[r_idx]
                     ts_r = tc_r[0]
-                    cvd_at_retest = cum_cvd_today[r_idx]
-                    cvd_diff = cvd_at_retest - cvd_at_sweep
+                    cvd_diff = cum_cvd_today[r_idx] - cvd_at_sweep
 
-                    # OI výplach min. -50 BTC (při sweepu nebo při retestu)
                     oi_sweep = min(oi_change_map.get(ts_sweep, 0.0), oi_change_map.get(ts_sweep, 0.0) + oi_change_map.get(ts_sweep + 300000, 0.0))
-                    oi_retest = min(oi_change_map.get(ts_r, 0.0), sum(oi_change_map.get( today_candles[k][0], 0.0 ) for k in range(sweep_idx, r_idx + 1)))
+                    oi_retest = min(oi_change_map.get(ts_r, 0.0), sum(oi_change_map.get(today_candles[k][0], 0.0) for k in range(sweep_idx, r_idx + 1)))
                     best_oi_flush = min(oi_sweep, oi_retest)
 
-                    # Retest nebo pokus na 0.05 % ze sweepnutého levelu
                     reached_005 = (tc_r[2] >= limit_entry_p) if is_high else (tc_r[3] <= limit_entry_p)
 
-                    # Podmínka: OI <= -50 BTC a CVD anomálie min. 100 BTC rozdíl (více než +100 nebo méně než -100 BTC)
                     if reached_005 and best_oi_flush <= -50.0 and abs(cvd_diff) >= 100.0:
                         if r_idx >= (n_today - 2):
                             direction = "SHORT" if is_high else "LONG"
                             t_payload = build_trade_plan(direction, limit_entry_p, upper_p, lower_p, f"SETUP 2: SFP {name} {direction}")
                             t_payload["trigger_ready"] = True
-                            candle_num = (r_idx - sweep_idx) + 1
-                            entry_txt = (
-                                f"✅ LIMIT {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | "
-                                f"SL Mkt: {t_payload['sl_market']:.0f}$ | TP1 (50%): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (50%): {t_payload['tp2_limit_50pct']:.0f}$"
-                            )
-                            triggered_msg = (
-                                f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$ | {candle_num}. svíčka konf.): "
-                                f"OI {best_oi_flush:.1f} BTC | CVD Δ {cvd_diff:+.1f} BTC<br><span style='color:#00f3ff;'>{entry_txt}</span>"
-                            )
+                            entry_txt = f"✅ LIMIT {direction} (0.05% z Topu): {limit_entry_p:.0f}$ (1000$) | SL Mkt: {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
+                            msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
+                            if liquid_ok:
+                                agent_msg = execute_okx_agent_trade(t_payload)
+                                msg += f"\n{agent_msg}"
+                                odesli_upozorneni("S2_LOCK_1H", f"SETUP 2: {name} LIMIT {direction}", msg, lock_duration=3600)
                             is_triggered = bool(liquid_ok)
-                            if is_triggered:
-                                clean_tg = triggered_msg.replace("<br>", "\n").replace("<span style='color:#00f3ff;'>", "").replace("</span>", "")
-                                odesli_upozorneni("S2_LOCK_1H", f"SETUP 2: {name} LIMIT {direction}", clean_tg, lock_duration=3600, trade_payload=t_payload)
                         retest_hit = True
                         break
 
-            total_candles_elapsed = (n_today - sweep_idx)
-            if not retest_hit and 1 <= total_candles_elapsed <= 9:
-                curr_diff = cum_cvd_today[-1] - cvd_at_sweep
-                sv_left = 9 - total_candles_elapsed
-                pending_retest_msgs.append(
-                    f"⏳ {name} ({val:.0f}$) vybrán ({total_candles_elapsed}/9 sv.) – čekám retest na 0.05% ({limit_entry_p:.0f}$) | CVD Δ {curr_diff:+.1f} BTC (zbývá {sv_left} sv.)"
-                )
+            total_elapsed = (n_today - sweep_idx)
+            if not retest_hit and 1 <= total_elapsed <= 9:
+                pending_retest_msgs.append(f"⏳ {name} vybrán – čekám retest na 0.05% ({limit_entry_p:.0f}$) | CVD Δ {cum_cvd_today[-1] - cvd_at_sweep:+.1f} (zbývá {9 - total_elapsed} sv.)")
 
-        if triggered_msg:
-            final_msg = triggered_msg
-        elif pending_retest_msgs:
-            final_msg = " | ".join(pending_retest_msgs)
-        else:
-            final_msg = "Skenuji Setup 2 (3–9 svíček vč. sweepu | OI ≤ -50 BTC | CVD |Δ| ≥ 100 BTC | Limit 0.05% z levelu)..."
-
-        return final_msg, is_triggered, levels_str
+        if triggered_msg: return triggered_msg, is_triggered, levels_str
+        elif pending_retest_msgs: return " | ".join(pending_retest_msgs), False, levels_str
+        return "Skenuji Setup 2 (3–9 svíček vč. sweepu | OI ≤ -50 BTC | CVD |Δ| ≥ 100 BTC | Limit 0.05% z levelu)...", False, levels_str
     except Exception:
         return "Načítám levely...", False, ""
 
@@ -1267,11 +1280,9 @@ if trg1 or trg2:
 c_cvd1 = "#3fb950" if cvd1 >= 0 else "#f85149"
 c_cvd5 = "#3fb950" if cvd5 >= 0 else "#f85149"
 c_cvd9 = "#3fb950" if cvd9 >= 0 else "#f85149"
-
 c_scvd1 = "#3fb950" if scvd1 >= 0 else "#f85149"
 c_scvd5 = "#3fb950" if scvd5 >= 0 else "#f85149"
 c_scvd9 = "#3fb950" if scvd9 >= 0 else "#f85149"
-
 c_oi1 = "#3fb950" if oi1 >= 0 else "#f85149"
 c_oi5 = "#3fb950" if oi5 >= 0 else "#f85149"
 c_oi9 = "#3fb950" if oi9 >= 0 else "#f85149"
@@ -1281,17 +1292,14 @@ pnl_sign = "+$" if total_pnl >= 0 else "-$"
 
 cvd_bar_pct = min(48.0, max(4.0, (abs(cvd5) / 150.0) * 48.0))
 cvd_mercury_cls = "thermo-mercury-up" if cvd5 >= 0 else "thermo-mercury-down"
-
 spot_bar_pct = min(48.0, max(4.0, (abs(scvd5) / 30.0) * 48.0))
 spot_mercury_cls = "thermo-mercury-up" if scvd5 >= 0 else "thermo-mercury-down"
-
 oi_bar_pct = min(48.0, max(4.0, (abs(oi5) / 120.0) * 48.0))
 oi_bar_left = "50%" if oi5 >= 0 else f"{50.0 - oi_bar_pct:.1f}%"
 oi_bar_color = "#3fb950" if oi5 >= 0 else "#f85149"
 
 st.markdown('<div class="gold-btc-banner"></div>', unsafe_allow_html=True)
 
-# --- FUTURISTICKÝ OKX MATRIX ---
 matrix_html = "\n".join([
     '<div class="matrix-unified">',
     '<div style="color: #ffffff; font-weight: 900; font-size: 18px; margin-bottom: 12px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW & LIQUIDATION MATRIX</div>',
@@ -1300,24 +1308,15 @@ matrix_html = "\n".join([
     '<div style="color: #00f3ff; font-size: 12px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 2px 4px #000;">CVD (FUT)</div>',
     f'<div style="font-size: 20px; font-weight: 900; color: {c_cvd1}; text-shadow: 0 0 10px #000;">{cvd1:+,.1f}</div>',
     '<div class="thermo-tube-wrap">',
-    '<div class="thermo-scale">',
-    '<span style="color:#3fb950;">+150</span>',
-    '<span style="color:#7ee787;">+75</span>',
-    '<span style="color:#ffffff;">0</span>',
-    '<span style="color:#ffa198;">-75</span>',
-    '<span style="color:#f85149;">-150</span>',
-    '</div>',
-    '<div class="thermo-glass">',
-    '<div class="thermo-zero-line"></div>',
+    '<div class="thermo-scale"><span style="color:#3fb950;">+150</span><span style="color:#7ee787;">+75</span><span style="color:#ffffff;">0</span><span style="color:#ffa198;">-75</span><span style="color:#f85149;">-150</span></div>',
+    '<div class="thermo-glass"><div class="thermo-zero-line"></div>',
     f'<div class="{cvd_mercury_cls}" style="height: {cvd_bar_pct:.1f}%;"></div>',
-    '</div>',
-    '</div>',
+    '</div></div>',
     '<div style="width: 100%; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 4px;">',
     '<div style="font-size: 9px; color: #94a3b8; font-weight: 800;">25M / 45M DELTA</div>',
     f'<div style="font-size: 13px; font-weight: 900; color: {c_cvd5};">{cvd5:+,.1f}</div>',
     f'<div style="font-size: 11px; font-weight: 900; color: {c_cvd9}; opacity: 0.85;">{cvd9:+,.1f}</div>',
-    '</div>',
-    '</div>',
+    '</div></div>',
     '<div style="display: flex; flex-direction: column; justify-content: space-between;">',
     '<div class="liq-bumper-box">',
     '<div style="color: #f85149; font-size: 10px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 1px 4px #000;">🎯 TP2 LONG (50%) / SHORT LIQ (+2%)</div>',
@@ -1338,36 +1337,24 @@ matrix_html = "\n".join([
     '</div>',
     f'<div style="font-size: 15px; font-weight: 900; color: {c_oi1};">{oi1:+,.1f} BTC</div>',
     f'<div style="font-size: 11px; font-weight: 800; color: #cbd5e1;"><span style="color:{c_oi5};">{oi5:+,.1f}</span> | <span style="color:{c_oi9};">{oi9:+,.1f}</span></div>',
-    '</div>',
-    '</div>',
+    '</div></div>',
     '<div class="thermo-card">',
     '<div style="color: #f1e05a; font-size: 12px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 2px 4px #000;">SPOT CVD</div>',
     f'<div style="font-size: 20px; font-weight: 900; color: {c_scvd1}; text-shadow: 0 0 10px #000;">{scvd1:+,.1f}</div>',
     '<div class="thermo-tube-wrap">',
-    '<div class="thermo-glass">',
-    '<div class="thermo-zero-line"></div>',
+    '<div class="thermo-glass"><div class="thermo-zero-line"></div>',
     f'<div class="{spot_mercury_cls}" style="height: {spot_bar_pct:.1f}%;"></div>',
     '</div>',
-    '<div class="thermo-scale" style="text-align: left;">',
-    '<span style="color:#3fb950;">+30</span>',
-    '<span style="color:#7ee787;">+15</span>',
-    '<span style="color:#ffffff;">0</span>',
-    '<span style="color:#ffa198;">-15</span>',
-    '<span style="color:#f85149;">-30</span>',
-    '</div>',
+    '<div class="thermo-scale" style="text-align: left;"><span style="color:#3fb950;">+30</span><span style="color:#7ee787;">+15</span><span style="color:#ffffff;">0</span><span style="color:#ffa198;">-15</span><span style="color:#f85149;">-30</span></div>',
     '</div>',
     '<div style="width: 100%; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 4px;">',
     '<div style="font-size: 9px; color: #94a3b8; font-weight: 800;">25M / 45M DELTA</div>',
     f'<div style="font-size: 13px; font-weight: 900; color: {c_scvd5};">{scvd5:+,.1f}</div>',
     f'<div style="font-size: 11px; font-weight: 900; color: {c_scvd9}; opacity: 0.85;">{scvd9:+,.1f}</div>',
-    '</div>',
-    '</div>',
-    '</div>',
-    '</div>'
+    '</div></div></div></div>'
 ])
 st.markdown(matrix_html, unsafe_allow_html=True)
 
-# VIZUÁLNÍ GRAF (11 UZAVŘENÝCH + 1 ŽIVÁ 5M SVÍČKA)
 vp_header_html = "\n".join([
     '<div style="text-align: center; margin-top: 5px; margin-bottom: -15px; z-index: 10; position: relative;">',
     '<div style="color: #ffffff; font-weight: 900; font-size: 16px; letter-spacing: 2px; text-shadow: 0 2px 5px black;">ABSORPCE & 1H VOLUME PROFILE (LIVE 5M VELO MODE)</div>',
@@ -1378,7 +1365,6 @@ st.markdown(vp_header_html, unsafe_allow_html=True)
 
 if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     x_axis = list(range(12))
-    
     cum_cvd_chart, cum_scvd_chart = [], []
     curr_c, curr_s = 0.0, 0.0
     for i in range(12):
@@ -1390,133 +1376,34 @@ if len(c_12_asc) == 12 and len(cvd_12) == 12 and len(scvd_12) == 12:
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.56, 0.22, 0.22])
 
     if poc_1h > 0 and vah_1h > val_1h:
-        fig.add_shape(
-            type="rect",
-            x0=-0.8, x1=11.3,
-            y0=val_1h, y1=vah_1h,
-            fillcolor="rgba(247, 147, 26, 0.06)",
-            line=dict(width=0),
-            layer="below",
-            row=1, col=1
-        )
-        fig.add_trace(go.Scatter(
-            x=[-0.8, 11.3], y=[vah_1h, vah_1h],
-            mode="lines",
-            line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"),
-            hoverinfo="skip", showlegend=False
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=[-0.8, 11.3], y=[poc_1h, poc_1h],
-            mode="lines",
-            line=dict(color="#f7931a", width=2.2),
-            hoverinfo="skip", showlegend=False
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=[-0.8, 11.3], y=[val_1h, val_1h],
-            mode="lines",
-            line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"),
-            hoverinfo="skip", showlegend=False
-        ), row=1, col=1)
+        fig.add_shape(type="rect", x0=-0.8, x1=11.3, y0=val_1h, y1=vah_1h, fillcolor="rgba(247, 147, 26, 0.06)", line=dict(width=0), layer="below", row=1, col=1)
+        fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[vah_1h, vah_1h], mode="lines", line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"), hoverinfo="skip", showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[poc_1h, poc_1h], mode="lines", line=dict(color="#f7931a", width=2.2), hoverinfo="skip", showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=[-0.8, 11.3], y=[val_1h, val_1h], mode="lines", line=dict(color="rgba(247, 147, 26, 0.65)", width=1.3, dash="dash"), hoverinfo="skip", showlegend=False), row=1, col=1)
 
-        for lbl_txt, lbl_val, lbl_col in [("VAH", vah_1h, "#f59e0b"), ("POC", poc_1h, "#f7931a"), ("VAL", val_1h, "#f59e0b")]:
-            fig.add_annotation(
-                x=0.0, y=lbl_val,
-                xref="paper", yref="y",
-                text=f"<b>{lbl_txt} {lbl_val:.0f}</b>",
-                showarrow=False,
-                xanchor="left", yanchor="middle",
-                font=dict(family="Orbitron, sans-serif", size=9, color=lbl_col),
-                bgcolor="rgba(4, 6, 9, 0.85)",
-                bordercolor=lbl_col,
-                borderwidth=1,
-                borderpad=2
-            )
-    
-    fig.add_trace(go.Candlestick(x=x_axis,
-                                 open=[float(c[1]) for c in c_12_asc],
-                                 high=[float(c[2]) for c in c_12_asc],
-                                 low=[float(c[3]) for c in c_12_asc],
-                                 close=[float(c[4]) for c in c_12_asc],
-                                 increasing_line_color="#3fb950", decreasing_line_color="#f85149",
-                                 increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149",
-                                 increasing_line_width=1.8, decreasing_line_width=1.8,
-                                 whiskerwidth=0.3,
-                                 showlegend=False), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=[-0.8, 13.6],
-        y=[b_price, b_price],
-        mode="lines",
-        line=dict(color="rgba(0, 243, 255, 0.55)", width=1.4, dash="dot"),
-        hoverinfo="skip",
-        showlegend=False
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=[11.0],
-        y=[b_price],
-        mode="markers",
-        marker=dict(color="#00f3ff", size=7, line=dict(color="#ffffff", width=1.5)),
-        hoverinfo="skip",
-        showlegend=False
-    ), row=1, col=1)
-
-    fig.add_annotation(
-        x=1.0,
-        y=b_price,
-        xref="paper",
-        yref="y",
-        text=f"<b>LIVE {b_price:.0f}</b>",
-        showarrow=False,
-        xanchor="right",
-        yanchor="middle",
-        font=dict(family="Orbitron, sans-serif", size=11, color="#00f3ff"),
-        bgcolor="rgba(4, 6, 9, 0.95)",
-        bordercolor="#00f3ff",
-        borderwidth=1.5,
-        borderpad=4
-    )
-                                 
-    fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode="lines+markers",
-                             marker=dict(size=[0]*11 + [6], color="#00f3ff"),
-                             line=dict(color="#00f3ff", width=3, shape="spline", smoothing=1.1), showlegend=False), row=2, col=1)
-                             
-    fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode="lines+markers",
-                             marker=dict(size=[0]*11 + [6], color="#f1e05a"),
-                             line=dict(color="#f1e05a", width=3, shape="spline", smoothing=1.1), showlegend=False), row=3, col=1)
+    fig.add_trace(go.Candlestick(x=x_axis, open=[float(c[1]) for c in c_12_asc], high=[float(c[2]) for c in c_12_asc], low=[float(c[3]) for c in c_12_asc], close=[float(c[4]) for c in c_12_asc], increasing_line_color="#3fb950", decreasing_line_color="#f85149", increasing_fillcolor="#3fb950", decreasing_fillcolor="#f85149", increasing_line_width=1.8, decreasing_line_width=1.8, whiskerwidth=0.3, showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[-0.8, 13.6], y=[b_price, b_price], mode="lines", line=dict(color="rgba(0, 243, 255, 0.55)", width=1.4, dash="dot"), hoverinfo="skip", showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[11.0], y=[b_price], mode="markers", marker=dict(color="#00f3ff", size=7, line=dict(color="#ffffff", width=1.5)), hoverinfo="skip", showlegend=False), row=1, col=1)
+    fig.add_annotation(x=1.0, y=b_price, xref="paper", yref="y", text=f"<b>LIVE {b_price:.0f}</b>", showarrow=False, xanchor="right", yanchor="middle", font=dict(family="Orbitron, sans-serif", size=11, color="#00f3ff"), bgcolor="rgba(4, 6, 9, 0.95)", bordercolor="#00f3ff", borderwidth=1.5, borderpad=4)
+    fig.add_trace(go.Scatter(x=x_axis, y=cum_cvd_chart, mode="lines+markers", marker=dict(size=[0]*11 + [6], color="#00f3ff"), line=dict(color="#00f3ff", width=3, shape="spline", smoothing=1.1), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=x_axis, y=cum_scvd_chart, mode="lines+markers", marker=dict(size=[0]*11 + [6], color="#f1e05a"), line=dict(color="#f1e05a", width=3, shape="spline", smoothing=1.1), showlegend=False), row=3, col=1)
 
     def get_smart_range(arr, pad_ratio=0.02):
-        if not arr:
-            return [0, 1]
+        if not arr: return [0, 1]
         mn, mx = min(arr), max(arr)
         pd_val = (mx - mn) * pad_ratio
-        if pd_val == 0:
-            pd_val = 10
+        if pd_val == 0: pd_val = 10
         return [mn - pd_val, mx + pd_val]
 
     price_points = [float(c[3]) for c in c_12_asc] + [float(c[2]) for c in c_12_asc] + [float(b_price)]
-    if vah_1h > 0 and val_1h > 0:
-        price_points.extend([vah_1h, val_1h])
-
+    if vah_1h > 0 and val_1h > 0: price_points.extend([vah_1h, val_1h])
     p_rng = get_smart_range(price_points, pad_ratio=0.04)
     c_rng = get_smart_range(cum_cvd_chart, pad_ratio=0.02)
     s_rng = get_smart_range(cum_scvd_chart, pad_ratio=0.02)
 
-    fig.update_layout(
-        height=760,
-        margin=dict(l=6, r=6, t=20, b=0, pad=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True, range=[-0.8, 13.6]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=p_rng),
-        xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]),
-        yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=c_rng),
-        xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]),
-        yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=s_rng)
-    )
+    fig.update_layout(height=760, margin=dict(l=6, r=6, t=20, b=0, pad=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, rangeslider=dict(visible=False), fixedrange=True, range=[-0.8, 13.6]), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=p_rng), xaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]), yaxis2=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=c_rng), xaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=[-0.8, 13.6]), yaxis3=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, range=s_rng))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-# SETUP KARTY 
 liq_color = "#3fb950" if liquid_ok else "#94a3b8"
 box1_cls = "alert-box signal-triggered" if trg1 else "alert-box"
 box2_cls = "alert-box signal-triggered" if trg2 else "alert-box"
@@ -1525,11 +1412,11 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (2x RETEST ≤0.10% | RANGE ≤0.15% | 1M LIMIT ENTRY)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ SETUP 1: ABSORPCE (1H ZÁMEK)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP (3–9 SV. | OI ≤-50 | CVD |Δ|≥100 | LIMIT 0.05%)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 SETUP 2: MACRO SFP RETEST (1H ZÁMEK)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -1537,7 +1424,6 @@ setups_html = "\n".join([
 ])
 st.markdown(setups_html, unsafe_allow_html=True)
 
-# MONEY JOURNAL
 journal_html = "\n".join([
     '<div class="money-journal">',
     '<div class="money-content">',
@@ -1557,17 +1443,17 @@ st.markdown(journal_html, unsafe_allow_html=True)
 if st.button("🔄 AKTUALIZOVAT"):
     st.rerun()
 
-if st.button("📲 OTESTOVAT TELEGRAM SPOJENÍ"):
+if st.button("📲 OTESTOVAT TELEGRAM & AI AGENTA"):
     test_plan = build_trade_plan("SHORT", b_price, upper_p, lower_p, "TEST AI AGENT")
+    test_msg = execute_okx_agent_trade(test_plan)
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ OKX TERMINÁL + AI AGENT",
-        f"✅ Spojení funguje! Live BTC: {b_price:.0f}$ | Test Pos: 1000$ (100$x10) | SL (0.25% Mkt): {test_plan['sl_market']:.0f}$ | TP1 (50% Lmt): {test_plan['tp1_limit_50pct']:.0f}$ | TP2 (50% Lmt): {test_plan['tp2_limit_50pct']:.0f}$",
-        force=True,
-        trade_payload=test_plan
+        f"✅ Spojení funguje! Live BTC: {b_price:.0f}$\n\n{test_msg}",
+        force=True
     )
     if ok:
-        st.success("Testovací zpráva byla odeslána na tvůj Telegram (a do Google Sheet Webhooku)!")
+        st.success("Testovací zpráva byla odeslána na tvůj Telegram!")
     else:
         st.error("Odeslání selhalo.")
 
