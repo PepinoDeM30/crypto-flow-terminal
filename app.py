@@ -1,9 +1,13 @@
-import pandas as pd
+import os
+import sys
+import json
+import time
+import uuid
+import threading
 import requests
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-import time
-import threading
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
@@ -16,12 +20,16 @@ TELEGRAM_CHAT_ID = "9209356727"
 # --- PŘÍPRAVA PRO NAPOJENÍ NA GOOGLE SHEET OKX AI AGENTA (WEBHOOK) ---
 GOOGLE_SHEET_WEBHOOK_URL = ""
 
-# --- TRVALÁ PAMĚŤ SERVERU (PROTI SPAMU + ŽIVÝ SBĚR OBCHODŮ, OI A LIKVIDACÍ) ---
+# --- SOUBOROVÝ BUFFER NA DISKU SERVERU (PŘEŽIJE KAŽDÝ RELOAD I VLÁKNA) ---
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v3.json"
+
 @st.cache_resource
 def get_realtime_engine():
+    # Globální zámek v sys.__dict__, aby ho sdílela naprosto všechna vlákna v procesu
+    if "OKX_GLOBAL_LOCK" not in sys.__dict__:
+        sys.__dict__["OKX_GLOBAL_LOCK"] = threading.Lock()
     return {
-        "lock": threading.Lock(),
-        "sent_alerts": {},
+        "lock": sys.__dict__["OKX_GLOBAL_LOCK"],
         "fut_buckets": {},
         "spot_buckets": {},
         "last_fut_trade_id": None,
@@ -40,6 +48,22 @@ def get_realtime_engine():
 
 ENGINE = get_realtime_engine()
 
+def _load_alert_history():
+    try:
+        if os.path.exists(ALERT_STATE_FILE):
+            with open(ALERT_STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_alert_history(history_dict):
+    try:
+        with open(ALERT_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(history_dict, f)
+    except Exception:
+        pass
+
 def odesli_do_google_sheet_agenta(payload_data):
     if not GOOGLE_SHEET_WEBHOOK_URL:
         return False
@@ -49,20 +73,33 @@ def odesli_do_google_sheet_agenta(payload_data):
     except Exception:
         return False
 
-def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key=None, category_cooldown=1200, force=False, trade_payload=None):
+def odesli_upozorneni(setup_id_key, setup_nazev, detail_zpravy, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800, force=False, trade_payload=None):
     now_ts = time.time()
     with ENGINE["lock"]:
+        history = _load_alert_history()
         if not force:
-            last_sent = ENGINE["sent_alerts"].get(setup_id_key, 0.0)
-            if (now_ts - last_sent) < cooldown_sec:
+            # 1. Globální protispamový buffer (min. 60 vteřin mezi jakýmikoliv zprávami)
+            last_any = float(history.get("ANY_ALERT_TS", 0.0))
+            if (now_ts - last_any) < 60.0:
                 return False
+
+            # 2. Buffer pro celou kategorii (např. celý SETUP 1 má 30 minut = 1800s stopku po 1. zprávě)
             if category_key:
-                last_cat_sent = ENGINE["sent_alerts"].get(category_key, 0.0)
-                if (now_ts - last_cat_sent) < category_cooldown:
+                last_cat = float(history.get(category_key, 0.0))
+                if (now_ts - last_cat) < category_cooldown:
                     return False
-        ENGINE["sent_alerts"][setup_id_key] = now_ts
+
+            # 3. Buffer pro konkrétní směr/zónu (výchozí 60 minut = 3600s)
+            last_specific = float(history.get(setup_id_key, 0.0))
+            if (now_ts - last_specific) < cooldown_sec:
+                return False
+
+        # Zápis okamžitě na disk ještě před odesláním, aby žádné paralelní vlákno neposlalo duplikát
+        history["ANY_ALERT_TS"] = now_ts
+        history[setup_id_key] = now_ts
         if category_key:
-            ENGINE["sent_alerts"][category_key] = now_ts
+            history[category_key] = now_ts
+        _save_alert_history(history)
 
     if trade_payload is not None:
         odesli_do_google_sheet_agenta(trade_payload)
@@ -355,7 +392,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
     
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | 24/7 Cloud Hlídač + Live 5M zapnutý"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | 24/7 Cloud Hlídač + 30m Buffer zapnutý"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -429,7 +466,6 @@ def poll_realtime_okx_flow():
     ts = int(time.time() * 1000)
     curr_5m_open = (ts // 300000) * 300000
 
-    # 1. Živý sběr Futures obchodů (BTC-USDT-SWAP)
     try:
         u_fut = f"https://www.okx.com/api/v5/market/trades?instId=BTC-USDT-SWAP&limit=500&t={ts}"
         trades_f = requests.get(u_fut, timeout=3).json().get("data", [])
@@ -453,7 +489,6 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
-    # 2. Živý sběr Spot obchodů (BTC-USDT)
     try:
         u_spot = f"https://www.okx.com/api/v5/market/trades?instId=BTC-USDT&limit=500&t={ts}"
         trades_s = requests.get(u_spot, timeout=3).json().get("data", [])
@@ -477,7 +512,6 @@ def poll_realtime_okx_flow():
     except Exception:
         pass
 
-    # 3. Živý Open Interest pro aktuální neuzavřenou 5M svíčku
     try:
         u_oi = f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP&t={ts}"
         oi_data = requests.get(u_oi, timeout=3).json().get("data", [])
@@ -519,7 +553,6 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
         return 0.6 * real_collected + 0.4 * sub_delta
     return sub_delta
 
-# --- VÝPOČET LIKVIDAČNÍCH MAGNETŮ DO ±2 % OD CENY ---
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
     curr_5m_candle = (int(time.time() * 1000) // 300000) * 300000
     with ENGINE["lock"]:
@@ -765,7 +798,6 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
         highs = [float(c[2]) for c in c_12_asc]
         lows = [float(c[3]) for c in c_12_asc]
         closes = [float(c[4]) for c in c_12_asc]
-        timestamps = [int(c[0]) for c in c_12_asc]
         
         max_all_h = max(highs)
         min_all_l = min(lows)
@@ -808,10 +840,11 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                         if valid_bear_abs:
                             src_name = "CVD+SPOT" if (c_diff >= 15.0 and s_diff >= 3.0) else ("CVD" if c_diff >= 15.0 else "SPOT")
                             msg = f"{prefix}🔥 BEARISH ABSORPCE (Equal Highs Δ {wick_diff_h:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na vrcholu (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            zone_bucket = int(round(max(highs[i], highs[j]) / 150.0) * 150)
-                            setup_key = f"EQH_{timestamps[i]}_{zone_bucket}"
+                            # Klíč nezávislý na indexu svíčky i -> 60 min stopka na Bearish Setup 1 + 30 min globální stopka na celý Setup 1
+                            zone_bucket = int(round(max_all_h / 300.0) * 300)
+                            setup_key = f"S1_BEAR_{zone_bucket}"
                             if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BEARISH EQUAL HIGHS", msg, cooldown_sec=7200, category_key="SETUP1_ANY", category_cooldown=1200)
+                                odesli_upozorneni(setup_key, "SETUP 1: BEARISH EQUAL HIGHS", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
                             return msg, bool(liquid_ok)
 
                 # --- 2. BULLISH EQUAL LOWS ---
@@ -839,10 +872,10 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
                         if valid_bull_abs:
                             src_name = "CVD+SPOT" if (c_diff <= -15.0 and s_diff <= -3.0) else ("CVD" if c_diff <= -15.0 else "SPOT")
                             msg = f"{prefix}🔥 BULLISH ABSORPCE (Equal Lows Δ {wick_diff_l:.0f}$ | Pullback ≥ 120$): {src_name} anomálie na dně (CVD {c_diff:+.1f} / Spot {s_diff:+.1f})!"
-                            zone_bucket = int(round(min(lows[i], lows[j]) / 150.0) * 150)
-                            setup_key = f"EQL_{timestamps[i]}_{zone_bucket}"
+                            zone_bucket = int(round(min_all_l / 300.0) * 300)
+                            setup_key = f"S1_BULL_{zone_bucket}"
                             if liquid_ok:
-                                odesli_upozorneni(setup_key, "SETUP 1: BULLISH EQUAL LOWS", msg, cooldown_sec=7200, category_key="SETUP1_ANY", category_cooldown=1200)
+                                odesli_upozorneni(setup_key, "SETUP 1: BULLISH EQUAL LOWS", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
                             return msg, bool(liquid_ok)
 
         # --- 3. ÚZKÝ RANGE (ZÁMEK) ---
@@ -856,17 +889,17 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok):
             if close_spread <= (ref_price * max_body_pct):
                 c_sum = sum(cvd_12[-win:])
                 s_sum = sum(scvd_12[-win:])
-                range_zone_bucket = int(round(ref_price / 200.0) * 200)
+                range_zone_bucket = int(round(ref_price / 300.0) * 300)
 
                 if (c_sum >= 35.0 and s_sum >= -2.0) or (s_sum >= 5.0 and c_sum >= 0.0):
                     msg = f"{prefix}🔥 BEARISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen nákup (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
                     if liquid_ok:
-                        odesli_upozorneni(f"RNG_BEAR_ZONE_{range_zone_bucket}", "SETUP 1: BEARISH ÚZKÝ RANGE", msg, cooldown_sec=5400, category_key="SETUP1_ANY", category_cooldown=1200)
+                        odesli_upozorneni(f"S1_BEAR_{range_zone_bucket}", "SETUP 1: BEARISH ÚZKÝ RANGE", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
                     return msg, bool(liquid_ok)
                 if (c_sum <= -35.0 and s_sum <= 2.0) or (s_sum <= -5.0 and c_sum <= 0.0):
                     msg = f"{prefix}🔥 BULLISH ABSORPCE (Úzký Range {close_spread_pct:.2f}% / {win} sv.): Pohlcen prodej (CVD {c_sum:+.1f} BTC | Spot {s_sum:+.1f} BTC)!"
                     if liquid_ok:
-                        odesli_upozorneni(f"RNG_BULL_ZONE_{range_zone_bucket}", "SETUP 1: BULLISH ÚZKÝ RANGE", msg, cooldown_sec=5400, category_key="SETUP1_ANY", category_cooldown=1200)
+                        odesli_upozorneni(f"S1_BULL_{range_zone_bucket}", "SETUP 1: BULLISH ÚZKÝ RANGE", msg, cooldown_sec=3600, category_key="GLOBAL_SETUP1", category_cooldown=1800)
                     return msg, bool(liquid_ok)
 
         return "Skenuji Setup 1 (Equal Highs/Lows + Úzký Range)...", False
@@ -983,7 +1016,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
                                 triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
                                 is_triggered = bool(liquid_ok)
                                 if is_triggered:
-                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
+                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=43200, category_key="GLOBAL_SETUP2", category_cooldown=1800)
                             retest_hit = True
                             break
                         elif not is_high and cvd_diff <= -100.0:
@@ -991,7 +1024,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
                                 triggered_msg = f"{prefix}🔥 SETUP 2 PLATNÝ ({name} {val:.0f}): SFP Retest ({r_idx - sweep_idx}. svíčka po sweepu) + OI {oi_flush:.1f} BTC | CVD {cvd_diff:+.1f} BTC!"
                                 is_triggered = bool(liquid_ok)
                                 if is_triggered:
-                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=14400)
+                                    odesli_upozorneni(f"SFP_{name}_{current_date}", f"SETUP 2: SFP {name} RETEST", triggered_msg, cooldown_sec=43200, category_key="GLOBAL_SETUP2", category_cooldown=1800)
                             retest_hit = True
                             break
 
@@ -1013,11 +1046,18 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok):
     except Exception:
         return "Načítám levely...", False, ""
 
+# --- 24/7 HLÍDAČ S AUTOMATICKÝM UKONČENÍM STARÝCH VLÁKEN ---
 @st.cache_resource
 def start_background_guardian():
-    def _guardian_loop():
+    my_token = str(uuid.uuid4())
+    sys.__dict__["OKX_GUARDIAN_TOKEN"] = my_token
+
+    def _guardian_loop(thread_token):
         tick = 0
         while True:
+            # Pokud byl načten novější kód, staré vlákno se okamžitě ukončí!
+            if sys.__dict__.get("OKX_GUARDIAN_TOKEN") != thread_token:
+                break
             try:
                 poll_realtime_okx_flow()
                 if tick % 3 == 0:
@@ -1033,9 +1073,9 @@ def start_background_guardian():
                 pass
             time.sleep(10)
 
-    t = threading.Thread(target=_guardian_loop, daemon=True)
+    t = threading.Thread(target=_guardian_loop, args=(my_token,), daemon=True)
     t.start()
-    return True
+    return my_token
 
 start_background_guardian()
 
@@ -1079,7 +1119,7 @@ oi_bar_color = "#3fb950" if oi5 >= 0 else "#f85149"
 
 st.markdown('<div class="gold-btc-banner"></div>', unsafe_allow_html=True)
 
-# --- FUTURISTICKÝ OKX MATRIX (BEZ TROJITÝCH UVOZOVEK PRO 100% BEZCHYBNOST) ---
+# --- FUTURISTICKÝ OKX MATRIX ---
 matrix_html = "\n".join([
     '<div class="matrix-unified">',
     '<div style="color: #ffffff; font-weight: 900; font-size: 18px; margin-bottom: 12px; letter-spacing: 2px; text-shadow: 0px 2px 8px rgba(0,0,0,1);">OKX ORDER FLOW & LIQUIDATION MATRIX</div>',
@@ -1349,7 +1389,7 @@ if st.button("📲 OTESTOVAT TELEGRAM SPOJENÍ"):
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ OKX TERMINÁL",
-        f"✅ Telegram notifikace funguje! Live cena BTC: {b_price:.0f} $ | CVD: {cvd1:+.1f} | Spot: {scvd1:+.1f}",
+        f"✅ Telegram notifikace + 30m Buffer funguje! Live cena BTC: {b_price:.0f} $ | CVD: {cvd1:+.1f} | Spot: {scvd1:+.1f}",
         force=True
     )
     if ok:
