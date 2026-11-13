@@ -24,7 +24,7 @@ ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v8.json"
 SL_PCT = 0.0030               # Pevný Market Stop-Loss 0.30 %
 PB_1M_PCT = 0.0012            # Požadovaný pullback v ceně pro vstup na 1M grafu (0.12 %)
 S2_LIMIT_PCT = 0.0005         # Limit Entry u Setupu 2 na 0.05 % od sweepnuté hladiny
-PENDING_ORDER_TTL_SEC = 900   # Automatické zrušení nevyplněné limitky po 15 minutách (900 s)
+PENDING_ORDER_TTL_SEC = 900   # Automatické zrušení nevyplněné VSTUPNÍ limitky po 15 minutách (900 s)
 S1_MEMORY_TTL_SEC = 1200      # Paměť potvrzeného 5M Setupu 1 při čekání na 1M strukturu (20 min)
 
 # --- ZABEZPEČENÉ NAČTENÍ OKX API KLÍČŮ ZE STREAMLIT SECRETS ---
@@ -70,6 +70,16 @@ def get_realtime_engine():
             "confirm_1m_ts": 0,
             "locked_at_sec": 0.0,
             "zone_extreme_p": 0.0
+        },
+        "tp_plan": {
+            "active": False,
+            "close_side": "",
+            "entry_px": 0.0,
+            "tp1_px": 0,
+            "tp2_px": 0,
+            "ct1": 0,
+            "ct2": 0,
+            "tp_placed": False
         },
         "be_moved_algos": set()
     }
@@ -149,7 +159,7 @@ def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, 
         print(f"Telegram alert selhal: {e}")
         return False
 
-# --- AKTIVNÍ SPRÁVA POZIC A OBJEDNÁVEK (15M AUTO-CANCEL + AUTO BREAK-EVEN PO TP1) ---
+# --- AKTIVNÍ SPRÁVA POZIC: 15M TTL VSTUPU + MAKER (POST-ONLY) TP1/TP2 + AUTO BREAK-EVEN ---
 def manage_active_okx_lifecycle():
     if not OKX_SECRETS.get("ENABLED"):
         return
@@ -158,13 +168,24 @@ def manage_active_okx_lifecycle():
 
     inst_id = OKX_SECRETS["INST_ID"]
     ct_val = OKX_SECRETS["CONTRACT_BTC"]
+    base_url = "https://eea.okx.com"
     now_ms = int(time.time() * 1000)
 
     try:
-        # 1. Kontrola čekajících Limit příkazů – zrušení po 15 minutách (900 s)
         pend = _okx_signed_request("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
         pend_list = pend.get("data", []) if isinstance(pend, dict) else []
+
+        entry_pend = []
+        tp_pend = []
         for ord_item in pend_list:
+            is_ro = str(ord_item.get("reduceOnly", "false")).lower() == "true"
+            if is_ro:
+                tp_pend.append(ord_item)
+            else:
+                entry_pend.append(ord_item)
+
+        # 1. Kontrola čekajících VSTUPNÍCH Limit příkazů – zrušení po 15 minutách (900 s), nikdy nerušíme TP!
+        for ord_item in entry_pend:
             c_time = int(ord_item.get("cTime", now_ms))
             ord_id = str(ord_item.get("ordId", ""))
             if ord_id and (now_ms - c_time) >= (PENDING_ORDER_TTL_SEC * 1000):
@@ -173,54 +194,133 @@ def manage_active_okx_lifecycle():
                 if str(c_res.get("code")) == "0":
                     odesli_upozorneni(
                         f"CANCEL_{ord_id}",
-                        "AI AGENT: ZRUŠENA EXPIROVANÁ LIMITKA (15 MIN)",
-                        f"⏱️ Nevyplněná Post-Only objednávka ({ord_id}) byla po 15 minutách automaticky zrušena, protože cena utekla.",
+                        "AI AGENT: ZRUŠENA EXPIROVANÁ VSTUPNÍ LIMITKA (15 MIN)",
+                        f"⏱️ Nevyplněná vstupní Post-Only objednávka ({ord_id}) byla po 15 minutách automaticky zrušena, protože cena utekla.",
                         lock_duration=300,
                         force=True
                     )
 
-        # 2. Kontrola otevřené pozice – pokud se 1. polovina (TP1) vyplnila, posuneme SL 2. poloviny na Break-Even
-        if len(pend_list) == 0:
-            pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
-            pos_list = pos.get("data", []) if isinstance(pos, dict) else []
-            for p in pos_list:
-                pos_sz = abs(float(p.get("pos", "0") or 0.0))
-                avg_px = float(p.get("avgPx", "0") or 0.0)
-                if pos_sz <= 0 or avg_px <= 0:
-                    continue
+        # 2. Kontrola otevřené pozice
+        pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
+        pos_list = pos.get("data", []) if isinstance(pos, dict) else []
 
-                expected_full_ct = int((1000.0 / avg_px) / ct_val)
-                if expected_full_ct >= 2 and pos_sz <= (expected_full_ct * 0.65):
-                    be_px_str = str(int(round(avg_px)))
-                    for algo_type in ["oco", "conditional"]:
-                        algos = _okx_signed_request("GET", f"/api/v5/trade/orders-algo-pending?instId={inst_id}&ordType={algo_type}")
-                        algo_list = algos.get("data", []) if isinstance(algos, dict) else []
-                        for al in algo_list:
-                            algo_id = str(al.get("algoId", ""))
-                            curr_sl = float(al.get("slTriggerPx", "0") or 0.0)
-                            if not algo_id or algo_id in ENGINE["be_moved_algos"]:
-                                continue
-                            if abs(curr_sl - avg_px) > 3.0:
-                                amend_body = json.dumps({
-                                    "instId": inst_id,
-                                    "algoId": algo_id,
-                                    "newSlTriggerPx": be_px_str,
-                                    "newSlOrdPx": "-1"
-                                })
-                                am_res = _okx_signed_request("POST", "/api/v5/trade/amend-algos", amend_body)
-                                if str(am_res.get("code")) == "0":
-                                    ENGINE["be_moved_algos"].add(algo_id)
-                                    odesli_upozorneni(
-                                        f"BE_{algo_id}",
-                                        "AI AGENT: STOP-LOSS POSUNUT NA BREAK-EVEN",
-                                        f"🛡️ TP1 (první 50 % pozice) byl zasažen!\nStop-Loss zbývající poloviny pozice byl automaticky posunut na vstupní cenu Break-Even: <b>{be_px_str}$</b>.",
-                                        lock_duration=300,
-                                        force=True
-                                    )
+        active_pos = None
+        for p in pos_list:
+            pos_sz = abs(float(p.get("pos", "0") or 0.0))
+            avg_px = float(p.get("avgPx", "0") or 0.0)
+            if pos_sz > 0 and avg_px > 0:
+                active_pos = p
+                break
+
+        if active_pos is None and len(entry_pend) == 0:
+            with ENGINE["lock"]:
+                if ENGINE["tp_plan"].get("active"):
+                    ENGINE["tp_plan"]["active"] = False
+            return
+
+        if active_pos is not None:
+            raw_pos = float(active_pos.get("pos", "0") or 0.0)
+            pos_sz = abs(raw_pos)
+            avg_px = float(active_pos.get("avgPx", "0") or 0.0)
+            pos_side_val = str(active_pos.get("posSide", "net")).lower()
+
+            with ENGINE["lock"]:
+                tp_plan = dict(ENGINE["tp_plan"])
+                if not tp_plan.get("active"):
+                    saved_hist = _load_alert_history()
+                    if isinstance(saved_hist.get("ACTIVE_TP_PLAN"), dict):
+                        tp_plan = saved_hist["ACTIVE_TP_PLAN"]
+                        ENGINE["tp_plan"] = dict(tp_plan)
+
+            # 2A. Jakmile je pozice otevřená a v knize ještě neleží Maker TP1 a TP2, vložíme je jako post_only + reduceOnly
+            if len(entry_pend) == 0 and len(tp_pend) == 0 and tp_plan.get("active") and not tp_plan.get("tp_placed"):
+                close_side = tp_plan.get("close_side") or ("buy" if raw_pos < 0 or pos_side_val == "short" else "sell")
+                tp1_px = int(tp_plan.get("tp1_px", 0))
+                tp2_px = int(tp_plan.get("tp2_px", 0))
+
+                if tp1_px > 0 and tp2_px > 0:
+                    total_pos_ct = int(round(pos_sz))
+                    c1 = total_pos_ct // 2
+                    c2 = total_pos_ct - c1
+
+                    best_bid, best_ask = avg_px, avg_px
+                    try:
+                        tk = requests.get(f"{base_url}/api/v5/market/ticker?instId={inst_id}", timeout=3).json().get("data", [])
+                        if tk:
+                            best_bid = float(tk[0].get("bidPx") or avg_px)
+                            best_ask = float(tk[0].get("askPx") or avg_px)
+                    except Exception:
+                        pass
+
+                    def place_maker_tp(sz_ct, target_px):
+                        if sz_ct <= 0:
+                            return {"code": "-1"}
+                        safe_px = int(round(target_px))
+                        if close_side == "buy" and safe_px >= best_ask:
+                            safe_px = int(round(best_bid - 1.0))
+                        elif close_side == "sell" and safe_px <= best_bid:
+                            safe_px = int(round(best_ask + 1.0))
+                        tp_body = {
+                            "instId": inst_id,
+                            "tdMode": "isolated",
+                            "side": close_side,
+                            "ordType": "post_only",
+                            "reduceOnly": True,
+                            "px": str(safe_px),
+                            "sz": str(sz_ct)
+                        }
+                        return _okx_signed_request("POST", "/api/v5/trade/order", json.dumps(tp_body))
+
+                    res_tp1 = place_maker_tp(c1, tp1_px)
+                    res_tp2 = place_maker_tp(c2, tp2_px)
+
+                    if str(res_tp1.get("code")) == "0" or str(res_tp2.get("code")) == "0":
+                        with ENGINE["lock"]:
+                            ENGINE["tp_plan"]["tp_placed"] = True
+                            hist = _load_alert_history()
+                            hist["ACTIVE_TP_PLAN"] = dict(ENGINE["tp_plan"])
+                            _save_alert_history(hist)
+                        odesli_upozorneni(
+                            f"MAKER_TP_{int(time.time())}",
+                            "AI AGENT: TP1 A TP2 VLOŽENY DO KNIHY (100% MAKER POST-ONLY)",
+                            f"🎯 Pozice je otevřená @ <b>{avg_px:.0f}$</b>.\nDo Orderbooku byly vloženy 2x <b>Post-Only (Reduce-Only)</b> limitní příkazy:\n• TP1 (50 %): <b>{tp1_px}$</b>\n• TP2 (50 %): <b>{tp2_px}$</b>",
+                            lock_duration=60,
+                            force=True
+                        )
+
+            # 2B. Pokud se 1. polovina pozice (TP1) vyplnila, posuneme SL 2. poloviny na Break-Even
+            expected_full_ct = int((1000.0 / avg_px) / ct_val)
+            if len(entry_pend) == 0 and expected_full_ct >= 2 and pos_sz <= (expected_full_ct * 0.65):
+                be_px_str = str(int(round(avg_px)))
+                for algo_type in ["conditional", "oco"]:
+                    algos = _okx_signed_request("GET", f"/api/v5/trade/orders-algo-pending?instId={inst_id}&ordType={algo_type}")
+                    algo_list = algos.get("data", []) if isinstance(algos, dict) else []
+                    for al in algo_list:
+                        algo_id = str(al.get("algoId", ""))
+                        curr_sl = float(al.get("slTriggerPx", "0") or 0.0)
+                        if not algo_id or algo_id in ENGINE["be_moved_algos"]:
+                            continue
+                        if abs(curr_sl - avg_px) > 3.0:
+                            amend_body = json.dumps({
+                                "instId": inst_id,
+                                "algoId": algo_id,
+                                "newSlTriggerPx": be_px_str,
+                                "newSlOrdPx": "-1"
+                            })
+                            am_res = _okx_signed_request("POST", "/api/v5/trade/amend-algos", amend_body)
+                            if str(am_res.get("code")) == "0":
+                                ENGINE["be_moved_algos"].add(algo_id)
+                                odesli_upozorneni(
+                                    f"BE_{algo_id}",
+                                    "AI AGENT: STOP-LOSS POSUNUT NA BREAK-EVEN",
+                                    f"🛡️ TP1 (první 50 % pozice) byl zasažen!\nStop-Loss zbývající poloviny pozice byl automaticky posunut na vstupní cenu Break-Even: <b>{be_px_str}$</b>.",
+                                    lock_duration=300,
+                                    force=True
+                                )
     except Exception:
         pass
 
-# --- INTERNÍ AI AGENT (PŘÍMÁ MAKER POST-ONLY EXEKUCE NA OKX V5) ---
+# --- INTERNÍ AI AGENT (PŘÍMÁ MAKER POST-ONLY EXEKUCE NA OKX V5 + PŘÍPRAVA MAKER TP1/TP2) ---
 def execute_okx_agent_trade(plan):
     if not OKX_SECRETS.get("ENABLED"):
         return "🤖 AI Agent: Exekuce vypnuta (AI_TRADING_ENABLED=false)"
@@ -273,8 +373,10 @@ def execute_okx_agent_trade(plan):
         # Přepočet SL (0.30 %) podle finální Maker vstupní ceny
         if side == "sell":
             sl_px = round(maker_px * (1.0 + SL_PCT))
+            close_side = "buy"
         else:
             sl_px = round(maker_px * (1.0 - SL_PCT))
+            close_side = "sell"
 
         # 5. Výpočet kontraktů pro pozici 1000 USD (Marže 100 USD * Páka 10x)
         pos_usd = 1000.0
@@ -287,8 +389,12 @@ def execute_okx_agent_trade(plan):
         ct1 = total_ct // 2
         ct2 = total_ct - ct1
 
-        # 6. Odeslání 2x post_only Limit objednávek s Market SL (0.30%) a Limit TP1/TP2
-        def place_ord(sz, tp_px):
+        tp1_int = int(round(plan["tp1_limit_50pct"]))
+        tp2_int = int(round(plan["tp2_limit_50pct"]))
+
+        # 6. Odeslání 2x post_only Vstupních objednávek s připojeným Market SL (0.30%).
+        # TP1 a TP2 se vloží přímo do Orderbooku jako samostatné post_only (reduceOnly) příkazy ihned po otevření pozice!
+        def place_entry_ord(sz):
             body = {
                 "instId": inst_id,
                 "tdMode": "isolated",
@@ -298,18 +404,31 @@ def execute_okx_agent_trade(plan):
                 "sz": str(sz),
                 "attachAlgoOrds": [{
                     "slTriggerPx": str(int(sl_px)),
-                    "slOrdPx": "-1",
-                    "tpTriggerPx": str(int(round(tp_px))),
-                    "tpOrdPx": str(int(round(tp_px)))
+                    "slOrdPx": "-1"
                 }]
             }
             return _okx_signed_request("POST", "/api/v5/trade/order", json.dumps(body))
 
-        r1 = place_ord(ct1, plan["tp1_limit_50pct"])
-        r2 = place_ord(ct2, plan["tp2_limit_50pct"])
+        r1 = place_entry_ord(ct1)
+        r2 = place_entry_ord(ct2)
 
         if str(r1.get("code")) == "0" or str(r2.get("code")) == "0":
-            return f"🤖 AI AGENT: ZADAL 2x MAKER (POST-ONLY) PŘÍKAZY NA OKX @ {maker_px:.0f}$ (Pozice: 1000$ | SL 0.30%: {sl_px}$)"
+            new_tp_plan = {
+                "active": True,
+                "close_side": close_side,
+                "entry_px": float(round(maker_px)),
+                "tp1_px": tp1_int,
+                "tp2_px": tp2_int,
+                "ct1": ct1,
+                "ct2": ct2,
+                "tp_placed": False
+            }
+            with ENGINE["lock"]:
+                ENGINE["tp_plan"] = new_tp_plan
+                hist = _load_alert_history()
+                hist["ACTIVE_TP_PLAN"] = dict(new_tp_plan)
+                _save_alert_history(hist)
+            return f"🤖 AI AGENT: ZADAL 2x MAKER (POST-ONLY) VSTUP @ {maker_px:.0f}$ (SL 0.30%: {sl_px}$ | Po vyplnění vloží Maker Post-Only TP1: {tp1_int}$ & TP2: {tp2_int}$)"
         else:
             return f"⚠️ AI AGENT CHYBA: {r1.get('msg', '')} {r2.get('msg', '')}"
 
@@ -622,7 +741,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
 
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Bod A->B->C + Auto-BE + 15m TTL (SL {SL_PCT*100:.2f}%)"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | 100% Maker Vstup i TP1/TP2 + Auto-BE + 2s Stream"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -738,26 +857,45 @@ def poll_realtime_okx_flow():
 
 # === KONEC ČÁSTI 1 ===# === ZAČÁTEK ČÁSTI 2 ===
 
-def compute_single_1m_delta(m_candle, is_spot=False):
+def compute_anchored_1m_map(candles_1m, map_5m, is_spot=False):
+    with ENGINE["lock"]:
+        b_1m_src = dict(ENGINE["spot_1m_buckets"] if is_spot else ENGINE["fut_1m_buckets"])
+
+    groups = {}
+    for m in candles_1m:
+        try:
+            m_ts = int(m[0])
+            b5 = (m_ts // 300000) * 300000
+            vol_btc = float(m[5]) if is_spot else float(m[6])
+            groups.setdefault(b5, []).append((m_ts, max(vol_btc, 0.0001)))
+        except Exception:
+            continue
+
+    anchored = {}
+    for b5, items in groups.items():
+        real_vals = [b_1m_src.get(t, 0.0) for t, _ in items]
+        if map_5m and (b5 in map_5m):
+            official_5m = float(map_5m[b5])
+            total_vol = sum(v for _, v in items)
+            if any(abs(x) > 0.0 for x in real_vals):
+                diff = official_5m - sum(real_vals)
+                for (t, v), r_val in zip(items, real_vals):
+                    anchored[t] = r_val + diff * (v / total_vol)
+            else:
+                for t, v in items:
+                    anchored[t] = official_5m * (v / total_vol)
+        else:
+            for (t, _), r_val in zip(items, real_vals):
+                anchored[t] = r_val
+    return anchored
+
+def compute_single_1m_delta(m_candle, is_spot=False, anchored_map=None):
     m_ts = int(m_candle[0])
+    if anchored_map is not None and m_ts in anchored_map:
+        return anchored_map[m_ts]
     with ENGINE["lock"]:
         b_map = ENGINE["spot_1m_buckets"] if is_spot else ENGINE["fut_1m_buckets"]
-        real_1m = b_map.get(m_ts, 0.0)
-
-    o, h, l, cl = float(m_candle[1]), float(m_candle[2]), float(m_candle[3]), float(m_candle[4])
-    calc_1m = 0.0
-    if h > l:
-        vol_btc = float(m_candle[5]) if is_spot else float(m_candle[6])
-        body_p = (cl - o) / (h - l)
-        wick_p = (2.0 * cl - h - l) / (h - l)
-        sf = 0.16 if is_spot else 0.18
-        calc_1m = vol_btc * (0.60 * body_p + 0.40 * wick_p) * sf
-
-    if abs(real_1m) > abs(calc_1m) * 0.5:
-        return real_1m
-    if abs(real_1m) > 0.0:
-        return 0.6 * real_1m + 0.4 * calc_1m
-    return calc_1m
+        return b_map.get(m_ts, 0.0)
 
 def get_1m_extreme_ts(c_1m_list, start_ts, end_ts, is_high):
     extreme_val = -1.0 if is_high else float("inf")
@@ -785,31 +923,17 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False, s
     with ENGINE["lock"]:
         bucket_map = ENGINE["spot_buckets"] if is_spot else ENGINE["fut_buckets"]
         real_collected = bucket_map.get(candle_open_ts, 0.0)
-
-    sub_delta = 0.0
-    for m in candles_1m:
-        try:
-            m_ts = int(m[0])
-            if candle_open_ts <= m_ts < candle_open_ts + 300000:
-                o, h, l, cl = float(m[1]), float(m[2]), float(m[3]), float(m[4])
-                if h <= l:
-                    continue
-                vol_btc = float(m[5]) if is_spot else float(m[6])
-                body_pressure = (cl - o) / (h - l)
-                wick_pressure = (2.0 * cl - h - l) / (h - l)
-                combined_ratio = 0.60 * body_pressure + 0.40 * wick_pressure
-                sub_delta += vol_btc * combined_ratio * scale_factor
-        except Exception:
-            continue
-
-    if abs(real_collected) > abs(sub_delta) * 0.65:
-        return real_collected
+        b_1m_map = ENGINE["spot_1m_buckets"] if is_spot else ENGINE["fut_1m_buckets"]
+        sum_1m = sum(
+            v for k, v in b_1m_map.items()
+            if candle_open_ts <= k < candle_open_ts + 300000
+        )
     if abs(real_collected) > 0.0:
-        return 0.6 * real_collected + 0.4 * sub_delta
-    return sub_delta
+        return real_collected
+    return sum_1m
 
 # --- EXEKUČNÍ ENGINE SETUPU 1: BOD A (T_confirm) -> BOD B (Dynamický 1M Swing Break po T_confirm) -> BOD C (0.12% PB) ---
-def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, upper_p, lower_p, setup_label):
+def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, upper_p, lower_p, setup_label, fut_map=None, spot_map=None):
     mf = c1f[:45][::-1] if len(c1f) >= 45 else c1f[::-1]
     ms = c1s[:45][::-1] if len(c1s) >= 45 else c1s[::-1]
 
@@ -821,12 +945,15 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, uppe
     mf = mf[-n:]
     ms = ms[-n:] if len(ms) >= n else mf
 
+    anch_f = compute_anchored_1m_map(mf, fut_map, is_spot=False)
+    anch_s = compute_anchored_1m_map(ms, spot_map, is_spot=True)
+
     cf, cs, rf, rs = [], [], 0.0, 0.0
     ts_list, o1, h1, l1, c1 = [], [], [], [], []
 
     for i in range(n):
-        rf += compute_single_1m_delta(mf[i], is_spot=False)
-        rs += compute_single_1m_delta(ms[i], is_spot=True)
+        rf += compute_single_1m_delta(mf[i], is_spot=False, anchored_map=anch_f)
+        rs += compute_single_1m_delta(ms[i], is_spot=True, anchored_map=anch_s)
         cf.append(rf)
         cs.append(rs)
         ts_list.append(int(mf[i][0]))
@@ -869,17 +996,13 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, uppe
         # 2. Sledování vývoje VÝHRADNĚ PO T_confirm (k > c_idx)
         for k in range(c_idx + 1, n):
             if is_bullish:
-                # Průraz aktuálně platného High -> Bod B potvrzen!
                 if series[k] > ref_level:
                     return True, k, ref_level
-                # Pokud vzniklo po T_confirm nové lokální High, které neprorazilo staré, přepíše staré v paměti
                 if (k - 1) > c_idx and series[k - 1] > series[k - 2] and series[k] < series[k - 1]:
                     ref_level = series[k - 1]
             else:
-                # Průraz aktuálně platného Low -> Bod B potvrzen!
                 if series[k] < ref_level:
                     return True, k, ref_level
-                # Pokud vzniklo po T_confirm nové lokální Low, které neprorazilo staré, přepíše staré v paměti
                 if (k - 1) > c_idx and series[k - 1] < series[k - 2] and series[k] > series[k - 1]:
                     ref_level = series[k - 1]
 
@@ -929,7 +1052,7 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, c1s, btc_price, uppe
 
     pl = build_trade_plan(direction, plan_entry, upper_p, lower_p, setup_label)
     pl["trigger_ready"] = trg
-    txt += f" | SL (0.30% Mkt): {pl['sl_market']:.0f}$ | TP1: {pl['tp1_limit_50pct']:.0f}$ | TP2: {pl['tp2_limit_50pct']:.0f}$"
+    txt += f" | SL (0.30% Mkt): {pl['sl_market']:.0f}$ | Maker TP1: {pl['tp1_limit_50pct']:.0f}$ | Maker TP2: {pl['tp2_limit_50pct']:.0f}$"
     return trg, txt, pl
 
 def compute_liquidation_magnets(c_300, oi_change_map, btc_price):
@@ -1113,14 +1236,14 @@ def fetch_okx_data():
             if not is_live_candle and open_ts in fut_map:
                 cvd_12.append(fut_map[open_ts])
             else:
-                val_f = get_1m_real_or_calibrated_delta(candles_1m_fut, open_ts, is_spot=False, scale_factor=0.18)
+                val_f = get_1m_real_or_calibrated_delta(candles_1m_fut, open_ts, is_spot=False)
                 fut_map[open_ts] = val_f
                 cvd_12.append(val_f)
 
             if not is_live_candle and open_ts in spot_map:
                 scvd_12.append(spot_map[open_ts])
             else:
-                val_s = get_1m_real_or_calibrated_delta(candles_1m_spot, open_ts, is_spot=True, scale_factor=0.16)
+                val_s = get_1m_real_or_calibrated_delta(candles_1m_spot, open_ts, is_spot=True)
                 spot_map[open_ts] = val_s
                 scvd_12.append(val_s)
 
@@ -1169,8 +1292,8 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: ODDĚLENÉ PIVOTY + EXAKTNÍ 1M WICK CVD + PRAVIDLO 13:09 + PAMĚŤ T_confirm -> 1M BREAK -> 0.12% PB ---
-def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p):
+# --- SETUP 1: ODDĚLENÉ PIVOTY + UKOTVENÉ 1M WICK CVD + PRAVIDLO 13:09 + PAMĚŤ T_confirm -> 1M BREAK -> 0.12% PB ---
+def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, fut_map=None, spot_map=None):
     try:
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
         if rem_s1 > 0:
@@ -1185,7 +1308,6 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
         with ENGINE["lock"]:
             mem = ENGINE["s1_memory"]
             if mem["active"]:
-                # Expirace paměti po 20 minutách nebo při cenovém průrazu zóny o > 0.15 %
                 if (now_sec - mem["locked_at_sec"]) > S1_MEMORY_TTL_SEC:
                     mem["active"] = False
                 elif mem["direction"] == "SHORT" and btc_price > mem["zone_extreme_p"] * 1.0015:
@@ -1198,18 +1320,24 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
         closes = [float(c[4]) for c in c_12_asc]
         timestamps = [int(c[0]) for c in c_12_asc]
 
+        f_5m_ref = fut_map if fut_map else {timestamps[i]: cvd_12[i] for i in range(12)}
+        s_5m_ref = spot_map if spot_map else {timestamps[i]: scvd_12[i] for i in range(12)}
+
+        anch_f_1m = compute_anchored_1m_map(candles_1m_fut, f_5m_ref, is_spot=False)
+        anch_s_1m = compute_anchored_1m_map(candles_1m_spot, s_5m_ref, is_spot=True)
+
         start_ts = timestamps[0]
         cum_f_1m, cum_s_1m = {}, {}
         rc, rs = 0.0, 0.0
         for m in candles_1m_fut[::-1]:
             t = int(m[0])
             if t >= start_ts:
-                rc += compute_single_1m_delta(m, is_spot=False)
+                rc += compute_single_1m_delta(m, is_spot=False, anchored_map=anch_f_1m)
                 cum_f_1m[t] = rc
         for m in candles_1m_spot[::-1]:
             t = int(m[0])
             if t >= start_ts:
-                rs += compute_single_1m_delta(m, is_spot=True)
+                rs += compute_single_1m_delta(m, is_spot=True, anchored_map=anch_s_1m)
                 cum_s_1m[t] = rs
 
         max_all_h = max(highs)
@@ -1222,7 +1350,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
         detected_confirm_ts = 0
         detected_zone_p = 0.0
 
-        # 1) BEARISH EQUAL HIGHS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, 1M Wick CVD)
+        # 1) BEARISH EQUAL HIGHS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, Ukotvené 1M Wick CVD)
         if max_all_h > 0:
             top_zone_floor = max_all_h * (1.0 - 0.0010)
             high_pivots = []
@@ -1267,7 +1395,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                                 detected_zone_p = max_all_h
                                 break
 
-        # 2) BULLISH EQUAL LOWS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, 1M Wick CVD)
+        # 2) BULLISH EQUAL LOWS (Oddělené pivoty v zóně 0.10 %, PB >= 0.18 %, Pravidlo 13:09, Ukotvené 1M Wick CVD)
         if detected_dir is None and min_all_l > 0:
             bot_zone_ceil = min_all_l * (1.0 + 0.0010)
             low_pivots = []
@@ -1362,10 +1490,10 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
             active_header = mem["header_text"]
             active_confirm_ts = mem["confirm_1m_ts"]
 
-        # Pokud je Bod A aktivní (buď právě detekovaný, nebo držený v 20min paměti), vyhodnotíme Bod B a Bod C na 1M grafu
+        # Pokud je Bod A aktivní, vyhodnotíme Bod B a Bod C na 1M grafu
         if is_mem_active:
             entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                active_dir, active_confirm_ts, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, active_label
+                active_dir, active_confirm_ts, candles_1m_fut, candles_1m_spot, btc_price, upper_p, lower_p, active_label, f_5m_ref, s_5m_ref
             )
             msg = f"{prefix}{active_header}\n{entry_txt}"
             if liquid_ok and entry_ok:
@@ -1376,7 +1504,7 @@ def scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, candles_1m_fut, candles_1
                 odesli_upozorneni("S1_LOCK_1H", f"SETUP 1: {active_dir} MAKER ENTRY", msg, lock_duration=3600)
             return msg, bool(liquid_ok and entry_ok)
 
-        return "Skenuji Setup 1 (Oddělené pivoty ≤0.10%, 1M Wick CVD, 13:09 filtr, Bod A -> Bod B -> 0.12% PB)...", False
+        return "Skenuji Setup 1 (Oddělené pivoty ≤0.10%, Ukotvené 1M Wick CVD, 13:09 filtr, Bod A -> Bod B -> 0.12% PB)...", False
     except Exception:
         return "Načítám data Setupu 1...", False
 
@@ -1421,7 +1549,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if 1 <= dt.hour < 7:
                 asia_h, asia_l = max(asia_h, float(c[2])), min(asia_l, float(c[3]))
             elif 9 <= dt.hour < 14:
-                lon_h, lon_l = max(lon_h, float(c[2])), min(lon_l, float(c[3]))
+                lon_h, lon_l = max(lon_h, float(c[2])), min(lon_h, float(c[3]))
 
         if asia_h == 0.0:
             asia_h, asia_l = 0.0, 0.0
@@ -1487,7 +1615,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             direction = "SHORT" if is_high else "LONG"
                             t_payload = build_trade_plan(direction, limit_entry_p, upper_p, lower_p, f"SETUP 2: SFP {name} {direction}")
                             t_payload["trigger_ready"] = True
-                            entry_txt = f"✅ MAKER {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL (0.30% Mkt): {t_payload['sl_market']:.0f}$ | TP1: {t_payload['tp1_limit_50pct']:.0f}$ | TP2: {t_payload['tp2_limit_50pct']:.0f}$"
+                            entry_txt = f"✅ MAKER {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL (0.30% Mkt): {t_payload['sl_market']:.0f}$ | Maker TP1: {t_payload['tp1_limit_50pct']:.0f}$ | Maker TP2: {t_payload['tp2_limit_50pct']:.0f}$"
                             triggered_msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
                             if liquid_ok:
                                 agent_msg = execute_okx_agent_trade(t_payload)
@@ -1521,21 +1649,22 @@ def start_background_guardian():
                 break
             try:
                 poll_realtime_okx_flow()
-                if tick % 3 == 0:
+                if tick % 5 == 0:
                     manage_active_okx_lifecycle()
+                if tick % 15 == 0:
                     liq_ok, _ = check_liquid_hours()
                     if liq_ok:
                         data = fetch_okx_data()
                         cvd_12, scvd_12, c_12_asc = data[9], data[10], data[11]
-                        c_300, c_1h, fut_map, oi_change_map = data[12], data[13], data[14], data[16]
+                        c_300, c_1h, fut_map, spot_map, oi_change_map = data[12], data[13], data[14], data[15], data[16]
                         b_p, liq_d, m1_f, m1_s = data[17], data[19], data[20], data[21]
                         up_p, _, low_p, _ = liq_d
-                        scan_setup_1(c_12_asc, cvd_12, scvd_12, liq_ok, m1_f, m1_s, b_p, up_p, low_p)
+                        scan_setup_1(c_12_asc, cvd_12, scvd_12, liq_ok, m1_f, m1_s, b_p, up_p, low_p, fut_map, spot_map)
                         scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liq_ok, b_p, up_p, low_p)
                 tick += 1
             except Exception:
                 pass
-            time.sleep(10)
+            time.sleep(2)
 
     t = threading.Thread(target=_guardian_loop, args=(my_token,), daemon=True)
     t.start()
@@ -1551,7 +1680,7 @@ total_pnl, win_rate = load_trading_data()
 poc_1h, vah_1h, val_1h = vp_data
 upper_p, upper_btc, lower_p, lower_btc = liq_data
 
-msg1, trg1 = scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, m1_fut, m1_spot, b_price, upper_p, lower_p)
+msg1, trg1 = scan_setup_1(c_12_asc, cvd_12, scvd_12, liquid_ok, m1_fut, m1_spot, b_price, upper_p, lower_p, fut_map, spot_map)
 msg2, trg2, l_str = scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liquid_ok, b_price, upper_p, lower_p)
 
 if trg1 or trg2:
@@ -1731,11 +1860,11 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1: ABSORPCE (1M WICK CVD | 13:09 FILTR | BOD A->B->C + 0.12% PB)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1: ABSORPCE (UKOTVENÉ 1M WICK CVD | 13:09 FILTR | BOD A->B->C + 0.12% PB)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: MACRO SFP (MAKER LIMIT 0.05% | SL 0.30% | AUTO-BE)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: MACRO SFP (MAKER LIMIT 0.05% | MAKER TP1/TP2 | SL 0.30% | AUTO-BE)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2.replace(chr(10), "<br>")}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -1768,7 +1897,7 @@ if st.button("📲 OTESTOVAT TELEGRAM & AI AGENTA"):
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ TERMINÁL + AI AGENT",
-        f"✅ Vše běží v Post-Only (Maker) režimu s pamětí Bod A->B->C, Auto-BE a 15m TTL!\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
+        f"✅ Vše běží v 100% Post-Only (Maker) režimu pro vstup i TP1/TP2, s ukotveným 1M CVD a 2s streamem!\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
         force=True
     )
     if ok:
