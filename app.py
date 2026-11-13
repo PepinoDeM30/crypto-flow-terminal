@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import json
 import time
 import uuid
@@ -19,8 +20,9 @@ from plotly.subplots import make_subplots
 # --- NASTAVENÍ TELEGRAM NOTIFIKACÍ A PARAMETRŮ ---
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v10.json"
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v11.json"
 WEEKLY_LOG_FILE = "/tmp/okx_weekly_trades_log.json"
+WEEKLY_LOG_BACKUP = "okx_weekly_trades_log.json"
 
 DEFAULT_SL_PCT = 0.0030       # Výchozí Market Stop-Loss 0.30 % (Skupina 1 Macro & Setup 2)
 S2_LIMIT_PCT = 0.0005         # Limit Entry u Setupu 2 na 0.05 % od sweepnuté hladiny
@@ -43,7 +45,7 @@ except Exception:
     OKX_SECRETS = {"ENABLED": False}
 
 @st.cache_resource
-def get_realtime_engine():
+def get_realtime_engine_v11():
     if "OKX_GLOBAL_LOCK" not in sys.__dict__:
         sys.__dict__["OKX_GLOBAL_LOCK"] = threading.Lock()
     return {
@@ -57,6 +59,7 @@ def get_realtime_engine():
         "oi_start_map": {},
         "oi_live_delta": {},
         "last_oi_btc": None,
+        " has_open_or_pending": False,
         "liq_cache": {
             "candle_ts": 0,
             "upper_p": 0.0,
@@ -95,7 +98,7 @@ def get_realtime_engine():
         "be_moved_algos": set()
     }
 
-ENGINE = get_realtime_engine()
+ENGINE = get_realtime_engine_v11()
 
 def _load_alert_history():
     try:
@@ -113,30 +116,31 @@ def _save_alert_history(history_dict):
     except Exception:
         pass
 
+def load_weekly_trade_logs():
+    for path in [WEEKLY_LOG_FILE, WEEKLY_LOG_BACKUP]:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
+        except Exception:
+            continue
+    return []
+
 def log_weekly_trade_event(record_dict):
     try:
         with ENGINE["lock"]:
-            logs = []
-            if os.path.exists(WEEKLY_LOG_FILE):
-                try:
-                    with open(WEEKLY_LOG_FILE, "r", encoding="utf-8") as f:
-                        logs = json.load(f)
-                except Exception:
-                    logs = []
+            logs = load_weekly_trade_logs()
             logs.append(record_dict)
-            with open(WEEKLY_LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(logs, f, ensure_ascii=False, indent=2)
+            for path in [WEEKLY_LOG_FILE, WEEKLY_LOG_BACKUP]:
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(logs, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
     except Exception:
         pass
-
-def load_weekly_trade_logs():
-    try:
-        if os.path.exists(WEEKLY_LOG_FILE):
-            with open(WEEKLY_LOG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return []
 
 def get_setup_cooldown_remaining(lock_key, lock_duration=3600):
     now_ts = time.time()
@@ -182,6 +186,24 @@ def _okx_signed_request(method, path, body=""):
     else:
         return requests.post(base_url + path, headers=headers, data=body, timeout=5).json()
 
+def has_okx_open_or_pending_trade():
+    if not OKX_SECRETS.get("ENABLED") or not OKX_SECRETS.get("API_KEY"):
+        return False
+    inst_id = OKX_SECRETS["INST_ID"]
+    try:
+        pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
+        for p in (pos.get("data") or []):
+            if abs(float(p.get("pos", "0") or 0.0)) > 0:
+                return True
+        pend = _okx_signed_request("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
+        for ord_item in (pend.get("data") or []):
+            if str(ord_item.get("reduceOnly", "false")).lower() != "true":
+                return True
+    except Exception:
+        pass
+    return False
+
+# --- BEZPEČNÉ ODESÍLÁNÍ NA TELEGRAM (OCHRANA PROTI < A > V HTML + AUTOMATICKÝ FALLBACK) ---
 def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, force=False):
     now_ts = time.time()
     with ENGINE["lock"]:
@@ -195,13 +217,24 @@ def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, 
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        safe_detail = str(detail_zpravy).replace("<b>", "[[B_OPEN]]").replace("</b>", "[[B_CLOSE]]")
+        safe_detail = safe_detail.replace("<", "≤").replace(">", "≥")
+        safe_detail = safe_detail.replace("[[B_OPEN]]", "<b>").replace("[[B_CLOSE]]", "</b>")
+        safe_title = str(setup_nazev).replace("<", "≤").replace(">", "≥")
+
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": f"🚨 <b>{setup_nazev}</b>\n\n{detail_zpravy}",
+            "text": f"🚨 <b>{safe_title}</b>\n\n{safe_detail}",
             "parse_mode": "HTML"
         }
         res = requests.post(url, json=payload, timeout=5)
-        return res.status_code == 200
+        if res.status_code == 200:
+            return True
+
+        # Fallback: pokud by Telegram z jakéhokoliv důvodu odmítl HTML, odešleme čistý text
+        plain_text = re.sub(r"<[^>]+>", "", f"🚨 {safe_title}\n\n{safe_detail}")
+        res_plain = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": plain_text}, timeout=5)
+        return res_plain.status_code == 200
     except Exception as e:
         print(f"Telegram alert selhal: {e}")
         return False
@@ -258,6 +291,9 @@ def manage_active_okx_lifecycle():
             if pos_sz > 0 and avg_px > 0:
                 active_pos = p
                 break
+
+        with ENGINE["lock"]:
+            ENGINE["has_open_or_pending"] = (active_pos is not None or len(entry_pend) > 0)
 
         if active_pos is None and len(entry_pend) == 0:
             with ENGINE["lock"]:
@@ -382,10 +418,10 @@ def manage_active_okx_lifecycle():
     except Exception:
         pass
 
-# --- INTERNÍ AI AGENT (PŘÍMÁ MAKER POST-ONLY EXEKUCE NA OKX V5 S DYNAMICKÝM SL A TP REŽIMEM) ---
+# --- INTERNÍ AI AGENT (VRACÍ DVOJICI: [BOOL_EXECUTED, STATUS_TEXT]) ---
 def execute_okx_agent_trade(plan):
     if not OKX_SECRETS.get("ENABLED"):
-        return "🤖 AI Agent: Exekuce vypnuta (AI_TRADING_ENABLED=false)"
+        return True, "🤖 AI Agent: Exekuce vypnuta (Dry-Run logování aktivní)"
 
     try:
         api_key = OKX_SECRETS["API_KEY"]
@@ -395,19 +431,21 @@ def execute_okx_agent_trade(plan):
         base_url = "https://eea.okx.com"
 
         if not api_key or not sec_key:
-            return "🤖 AI Agent: Chybí API klíče v Secrets!"
+            return False, "🤖 AI Agent: Chybí API klíče v Secrets!"
 
         # 1. Kontrola otevřených pozic
         pos = _okx_signed_request("GET", f"/api/v5/account/positions?instId={inst_id}")
         if pos.get("data") and len(pos["data"]) > 0:
             for p in pos["data"]:
                 if abs(float(p.get("pos", "0"))) > 0:
-                    return "🤖 AI Agent: Zamítnuto (Už existuje otevřená pozice)"
+                    return False, "🤖 AI Agent: Zamítnuto (Už existuje otevřená pozice)"
 
-        # 2. Kontrola čekajících limit příkazů
+        # 2. Kontrola čekajících vstupních limit příkazů
         pend = _okx_signed_request("GET", f"/api/v5/trade/orders-pending?instId={inst_id}")
         if pend.get("data") and len(pend["data"]) > 0:
-            return "🤖 AI Agent: Zamítnuto (Už existuje čekající limitka)"
+            for ord_item in pend["data"]:
+                if str(ord_item.get("reduceOnly", "false")).lower() != "true":
+                    return False, "🤖 AI Agent: Zamítnuto (Už existuje čekající vstupní limitka)"
 
         # 3. Nastavení páky 10x (Isolated)
         _okx_signed_request("POST", "/api/v5/account/set-leverage", json.dumps({
@@ -435,7 +473,6 @@ def execute_okx_agent_trade(plan):
         except Exception:
             pass
 
-        # Přepočet SL podle skupiny (0.30% / 0.20% / 0.10%) a finální Maker vstupní ceny
         if side == "sell":
             sl_px = round(maker_px * (1.0 + sl_pct))
             close_side = "buy"
@@ -443,13 +480,12 @@ def execute_okx_agent_trade(plan):
             sl_px = round(maker_px * (1.0 - sl_pct))
             close_side = "sell"
 
-        # 5. Výpočet kontraktů pro pozici 1000 USD (Marže 100 USD * Páka 10x)
         pos_usd = 1000.0
         total_btc = pos_usd / maker_px
         total_ct = int(total_btc / ct_val)
 
         if total_ct < 2:
-            return "🤖 AI Agent: Zamítnuto (Příliš malý kapitál)"
+            return False, "🤖 AI Agent: Zamítnuto (Příliš malý kapitál)"
 
         tp1_int = int(round(plan["tp1_limit_50pct"]))
         tp2_int = int(round(plan["tp2_limit_50pct"]))
@@ -497,6 +533,7 @@ def execute_okx_agent_trade(plan):
             }
             with ENGINE["lock"]:
                 ENGINE["tp_plan"] = new_tp_plan
+                ENGINE["has_open_or_pending"] = True
                 hist = _load_alert_history()
                 hist["ACTIVE_TP_PLAN"] = dict(new_tp_plan)
                 _save_alert_history(hist)
@@ -508,12 +545,12 @@ def execute_okx_agent_trade(plan):
             else:
                 tp_desc = f"50/50 Maker TP1: {tp1_int}$ & TP2: {tp2_int}$ + Auto-BE"
 
-            return f"🤖 AI AGENT: ZADAL MAKER (POST-ONLY) VSTUP @ {maker_px:.0f}$ (SL {sl_pct*100:.2f}%: {sl_px}$ | {tp_desc})"
+            return True, f"🤖 AI AGENT: ZADAL MAKER (POST-ONLY) VSTUP @ {maker_px:.0f}$ (SL {sl_pct*100:.2f}%: {sl_px}$ | {tp_desc})"
         else:
-            return f"⚠️ AI AGENT CHYBA: {err_msg}"
+            return False, f"⚠️ AI AGENT CHYBA: {err_msg}"
 
     except Exception as e:
-        return f"⚠️ AI AGENT VÝJIMKA: {str(e)}"
+        return False, f"⚠️ AI AGENT VÝJIMKA: {str(e)}"
 
 def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label, sl_pct=DEFAULT_SL_PCT, tp_mode="SPLIT_50_50"):
     if direction == "SHORT":
@@ -836,7 +873,7 @@ def check_liquid_hours():
     in_ny = (14 * 60) <= mins < (19 * 60)
 
     if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Top-Down S1 (Macro>Med>Micro) + 100% Maker"
+        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Top-Down S1 (Macro-Med-Micro) + 100% Maker"
     return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
 
 @st.cache_data(ttl=30)
@@ -1182,7 +1219,7 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, 
             if btc_price >= lmt_p or (f_brk_idx + 1 < n and max(h1[f_brk_idx + 1:]) >= lmt_p):
                 trg = True
                 plan_entry = max(btc_price, lmt_p)
-                txt = f"✅ MAKER SHORT AKTIVOVÁN (Potvrzeno {confirm_dt_str} -> 1M CVD LL + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER SHORT AKTIVOVÁN (Potvrzeno {confirm_dt_str} ➔ 1M CVD LL + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
                 txt = f"⏳ Bod B splněn (1M CVD LL po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB nahoru na {lmt_p:.0f}$)"
         else:
@@ -1197,7 +1234,7 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, 
             if btc_price <= lmt_p or (f_brk_idx + 1 < n and min(l1[f_brk_idx + 1:]) <= lmt_p):
                 trg = True
                 plan_entry = min(btc_price, lmt_p)
-                txt = f"✅ MAKER LONG AKTIVOVÁN (Potvrzeno {confirm_dt_str} -> 1M CVD HH + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER LONG AKTIVOVÁN (Potvrzeno {confirm_dt_str} ➔ 1M CVD HH + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
                 txt = f"⏳ Bod B splněn (1M CVD HH po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB dolů na {lmt_p:.0f}$)"
         else:
@@ -1444,17 +1481,28 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: TOP-DOWN 3 SKUPINY + UPGRADE PRAVIDLO PŘES COOLDOWN I V PAMĚTI BODU A ---
+# --- SETUP 1: TOP-DOWN 3 SKUPINY + OCHRANA BĚŽÍCÍ POZICE PŘI UPGRADU ---
 def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics):
     try:
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
         locked_rank = get_s1_locked_rank() if rem_s1 > 0 else 0
+        rank_name_map = {1: "MICRO", 2: "MEDIUM", 3: "MACRO"}
 
-        # Pokud už vystřelila nejvyšší skupina MACRO (rank 3), celý Setup 1 je na 1H uzamčen
+        with ENGINE["lock"]:
+            is_trade_busy = bool(ENGINE.get("has_open_or_pending", False))
+
+        # 1. Pokud už vystřelila nejvyšší skupina MACRO (rank 3), celý Setup 1 je na 1H uzamčen
         if rem_s1 > 0 and locked_rank >= 3:
             with ENGINE["lock"]:
                 ENGINE["s1_memory"]["active"] = False
             return f"🔒 Setup 1 [MACRO] uzamčen na 1H (zbývá {rem_s1 // 60 + 1} min) | Setup 2 povolen.", False
+
+        # 2. Pokud běží 1H zámek z nižší skupiny A NA BURZE JE STÁLE OTEVŘENÁ POZICE/LIMITKA, nesmíme ji přepsat!
+        if rem_s1 > 0 and is_trade_busy:
+            with ENGINE["lock"]:
+                ENGINE["s1_memory"]["active"] = False
+            locked_lbl = rank_name_map.get(locked_rank, "S1")
+            return f"🔒 Setup 1 [{locked_lbl}] má aktivní pozici/limitku na burze (zbývá {rem_s1 // 60 + 1} min zámku) – čekám na dokončení obchodu.", False
 
         if len(candles_300) < 36:
             return "Načítám Top-Down 15M–180M strukturu svíček...", False
@@ -1483,7 +1531,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
 
         prefix = "" if liquid_ok else "⏸️ "
 
-        # Definice 3 Top-Down skupin (priorita MACRO -> MEDIUM -> MICRO):
         groups_cfg = [
             ("MACRO",  12, 36, 0.45, 3, 250.0, 0.0018, 0.0030, "FULL_LIQ"),
             ("MEDIUM",  6, 18, 0.30, 2, 100.0, 0.0012, 0.0020, "SPLIT_50_50"),
@@ -1509,7 +1556,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
         for g_name, min_b, max_b, max_spr, req_touches, req_cvd, g_pb, g_sl, g_tp_mode in groups_cfg:
             g_rank = GROUP_RANK.get(g_name, 1)
 
-            # Pravidlo povýšení přes 1H Cooldown: nižší nebo stejná skupina je během 1H zámku přeskočena, vyšší skupina má právo zámek prolomit!
             if rem_s1 > 0 and g_rank <= locked_rank:
                 status_summaries.append(f"🔒 {g_name} (1H zámek – povolen pouze upgrade na vyšší skupinu)")
                 continue
@@ -1530,7 +1576,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 base_mx = max(body_highs_36[-min_b:])
                 base_mn = min(body_lows_36[-min_b:])
                 base_spr = ((base_mx - base_mn) / max(base_mn, 1.0)) * 100.0
-                status_summaries.append(f"{g_name}: {min_b*5}M těla {base_spr:.2f}% > {max_spr:.2f}%")
+                status_summaries.append(f"{g_name}: {min_b*5}M těla {base_spr:.2f}% nad {max_spr:.2f}%")
                 continue
 
             for k_test in range(max_valid_k, min_b - 1, -1):
@@ -1614,7 +1660,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     detected_label = f"SETUP 1 ({g_name}): BEARISH BOX"
                     detected_header = (
                         f"🔥 S1 [{g_name}] BEARISH BOX ({k_test*5}M | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
-                        f"{len(upper_touches)}x horní otest | CVD {box_cvd_short:+.1f} > +{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
+                        f"{len(upper_touches)}x horní otest | CVD {box_cvd_short:+.1f} ≥ +{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
                     detected_confirm_ts = tm_conf
                     detected_zone_p = max(sub_h)
@@ -1635,7 +1681,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     detected_label = f"SETUP 1 ({g_name}): BULLISH BOX"
                     detected_header = (
                         f"🔥 S1 [{g_name}] BULLISH BOX ({k_test*5}M | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
-                        f"{len(lower_touches)}x spodní otest | CVD {box_cvd_long:+.1f} < -{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
+                        f"{len(lower_touches)}x spodní otest | CVD {box_cvd_long:+.1f} ≤ -{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
                     detected_confirm_ts = tm_conf
                     detected_zone_p = min(sub_l)
@@ -1658,7 +1704,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 curr_rank = GROUP_RANK.get(mem.get("group_id", ""), 0)
 
                 if not mem["active"] or mem["direction"] != detected_dir:
-                    # Nové uzamčení Bodu A
                     mem["active"] = True
                     mem["direction"] = detected_dir
                     mem["group_id"] = detected_group
@@ -1675,7 +1720,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     mem["box_cvd"] = round(detected_cvd, 1)
                     mem["box_spot"] = round(detected_spot, 1)
                 elif new_rank > curr_rank:
-                    # Plynulý UPGRADE na vyšší skupinu (např. MICRO -> MEDIUM nebo MEDIUM -> MACRO) BEZ ZTRÁTY Bodu A (confirm_1m_ts)!
                     mem["group_id"] = detected_group
                     mem["setup_label"] = detected_label
                     mem["header_text"] = detected_header + " [⬆️ UPGRADE]"
@@ -1688,13 +1732,11 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     mem["box_cvd"] = round(detected_cvd, 1)
                     mem["box_spot"] = round(detected_spot, 1)
                 elif new_rank == curr_rank:
-                    # Aktualizace metrik stejné skupiny
                     mem["header_text"] = detected_header
                     mem["box_mins"] = detected_mins
                     mem["box_spread_pct"] = round(detected_spread, 2)
                     mem["box_cvd"] = round(detected_cvd, 1)
                     mem["box_spot"] = round(detected_spot, 1)
-                # Pokud new_rank < curr_rank, nikdy neponižujeme už uzamčenou vyšší skupinu!
 
             is_mem_active = mem["active"]
             active_dir = mem["direction"]
@@ -1717,7 +1759,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
             )
             msg = f"{prefix}{active_header}\n{entry_txt}"
             if liquid_ok and entry_ok:
-                agent_msg = execute_okx_agent_trade(t_payload)
+                exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
                 poc_v, vah_v, val_v = vp_data
                 w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                 cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
@@ -1733,36 +1775,40 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
                 )
                 msg += f"\n{agent_msg}{log_block}"
-                log_weekly_trade_event({
-                    "timestamp": now_str,
-                    "setup": f"SETUP_1_{active_group}",
-                    "group": active_group,
-                    "direction": active_dir,
-                    "entry": t_payload["entry"],
-                    "sl": t_payload["sl_market"],
-                    "sl_pct": round(active_sl * 100, 2),
-                    "pb_pct": round(active_pb * 100, 2),
-                    "tp_mode": active_tp_mode,
-                    "tp1": t_payload["tp1_limit_50pct"],
-                    "tp2": t_payload["tp2_limit_50pct"],
-                    "rrr": t_payload["rrr"],
-                    "box_mins": m_mins,
-                    "box_body_spread_pct": m_spr,
-                    "box_cvd": m_cvd,
-                    "box_spot_bg": m_spot,
-                    "trend_1h_72h": trend_1h_str,
-                    "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
-                    "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
-                    "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                    "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
-                    "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
-                    "agent_status": agent_msg
-                })
-                with ENGINE["lock"]:
-                    ENGINE["s1_memory"]["active"] = False
-                set_s1_locked_rank(GROUP_RANK.get(active_group, 3))
-                odesli_upozorneni("S1_LOCK_1H", f"SETUP 1 [{active_group}]: {active_dir} MAKER ENTRY", msg, lock_duration=3600, force=True)
-            return msg, bool(liquid_ok and entry_ok)
+
+                if exec_ok:
+                    log_weekly_trade_event({
+                        "timestamp": now_str,
+                        "setup": f"SETUP_1_{active_group}",
+                        "group": active_group,
+                        "direction": active_dir,
+                        "entry": t_payload["entry"],
+                        "sl": t_payload["sl_market"],
+                        "sl_pct": round(active_sl * 100, 2),
+                        "pb_pct": round(active_pb * 100, 2),
+                        "tp_mode": active_tp_mode,
+                        "tp1": t_payload["tp1_limit_50pct"],
+                        "tp2": t_payload["tp2_limit_50pct"],
+                        "rrr": t_payload["rrr"],
+                        "box_mins": m_mins,
+                        "box_body_spread_pct": m_spr,
+                        "box_cvd": m_cvd,
+                        "box_spot_bg": m_spot,
+                        "trend_1h_72h": trend_1h_str,
+                        "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
+                        "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
+                        "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
+                        "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
+                        "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
+                        "agent_status": agent_msg
+                    })
+                    with ENGINE["lock"]:
+                        ENGINE["s1_memory"]["active"] = False
+                    set_s1_locked_rank(GROUP_RANK.get(active_group, 3))
+                    odesli_upozorneni("S1_LOCK_1H", f"SETUP 1 [{active_group}]: {active_dir} MAKER ENTRY", msg, lock_duration=3600, force=True)
+                return msg, bool(exec_ok)
+
+            return msg, False
 
         return " 📦 ".join(status_summaries), False
     except Exception:
@@ -1934,7 +1980,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             entry_txt = f"✅ MAKER {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL (0.30% Mkt): {t_payload['sl_market']:.0f}$ | Maker TP1: {t_payload['tp1_limit_50pct']:.0f}$ | Maker TP2: {t_payload['tp2_limit_50pct']:.0f}$"
                             triggered_msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
                             if liquid_ok:
-                                agent_msg = execute_okx_agent_trade(t_payload)
+                                exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
                                 poc_v, vah_v, val_v = vp_data
                                 w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                                 cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
@@ -1949,31 +1995,32 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                     f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
                                 )
                                 triggered_msg += f"\n{agent_msg}{log_block}"
-                                log_weekly_trade_event({
-                                    "timestamp": now_str,
-                                    "setup": f"SETUP_2_SFP_{name}",
-                                    "group": "S2_MACRO_SFP",
-                                    "direction": direction,
-                                    "level_price": round(val, 1),
-                                    "entry": t_payload["entry"],
-                                    "sl": t_payload["sl_market"],
-                                    "sl_pct": 0.30,
-                                    "tp_mode": "SPLIT_50_50",
-                                    "tp1": t_payload["tp1_limit_50pct"],
-                                    "tp2": t_payload["tp2_limit_50pct"],
-                                    "rrr": t_payload["rrr"],
-                                    "oi_flush": round(best_oi_flush, 1),
-                                    "sfp_cvd_diff": round(cvd_diff, 1),
-                                    "trend_1h_72h": trend_1h_str,
-                                    "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
-                                    "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
-                                    "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                                    "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
-                                    "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
-                                    "agent_status": agent_msg
-                                })
-                                odesli_upozorneni("S2_LOCK_1H", f"SETUP 2: {name} MAKER {direction}", triggered_msg, lock_duration=3600)
-                            is_triggered = bool(liquid_ok)
+                                if exec_ok:
+                                    log_weekly_trade_event({
+                                        "timestamp": now_str,
+                                        "setup": f"SETUP_2_SFP_{name}",
+                                        "group": "S2_MACRO_SFP",
+                                        "direction": direction,
+                                        "level_price": round(val, 1),
+                                        "entry": t_payload["entry"],
+                                        "sl": t_payload["sl_market"],
+                                        "sl_pct": 0.30,
+                                        "tp_mode": "SPLIT_50_50",
+                                        "tp1": t_payload["tp1_limit_50pct"],
+                                        "tp2": t_payload["tp2_limit_50pct"],
+                                        "rrr": t_payload["rrr"],
+                                        "oi_flush": round(best_oi_flush, 1),
+                                        "sfp_cvd_diff": round(cvd_diff, 1),
+                                        "trend_1h_72h": trend_1h_str,
+                                        "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
+                                        "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
+                                        "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
+                                        "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
+                                        "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
+                                        "agent_status": agent_msg
+                                    })
+                                    odesli_upozorneni("S2_LOCK_1H", f"SETUP 2: {name} MAKER {direction}", triggered_msg, lock_duration=3600, force=True)
+                                is_triggered = bool(exec_ok)
                         retest_hit = True
                         break
 
@@ -1990,7 +2037,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian():
+def start_background_guardian_v11():
     my_token = str(uuid.uuid4())
     sys.__dict__["OKX_GUARDIAN_TOKEN"] = my_token
 
@@ -2022,7 +2069,7 @@ def start_background_guardian():
     t.start()
     return my_token
 
-start_background_guardian()
+start_background_guardian_v11()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -2034,7 +2081,7 @@ upper_p, upper_btc, lower_p, lower_btc = liq_data
 flow_metrics_tuple = (cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9)
 
 msg1, trg1 = scan_setup_1(c_300, c_1h, liquid_ok, m1_fut, b_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics_tuple)
-msg2, trg2, l_str = scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liquid_ok, b_price, upper_p, lower_p, vp_data, flow_metrics_tuple)
+msg2, trg2, l_str = scan_setup_2(c_300, c_1h, liquid_ok, b_price, upper_p, lower_p, vp_data, flow_metrics_tuple)
 
 if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
@@ -2213,7 +2260,7 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (MACRO > MEDIUM > MICRO | UPGRADE PŘES ZÁMEK | BODY-TO-BODY)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (MACRO ➔ MEDIUM ➔ MICRO | UPGRADE PO UZAVŘENÍ | BODY-TO-BODY)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
@@ -2241,31 +2288,41 @@ journal_html = "\n".join([
 ])
 st.markdown(journal_html, unsafe_allow_html=True)
 
+# --- TRVALE VIDITELNÉ TLAČÍTKO PRO STAŽENÍ VŠECH ZÁZNAMŮ V CSV ---
 weekly_logs = load_weekly_trade_logs()
 if weekly_logs:
     df_weekly = pd.DataFrame(weekly_logs)
-    csv_bytes = df_weekly.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label=f"📥 STÁHNOUT DATA TÝDENNÍHO TESTU PRO ANALÝZU ({len(weekly_logs)} záznamů)",
-        data=csv_bytes,
-        file_name=f"okx_weekly_test_{get_prague_now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
+else:
+    df_weekly = pd.DataFrame(columns=[
+        "timestamp", "setup", "group", "direction", "entry", "sl", "sl_pct",
+        "pb_pct", "tp_mode", "tp1", "tp2", "rrr", "box_mins",
+        "box_body_spread_pct", "box_cvd", "box_spot_bg", "trend_1h_72h",
+        "cvd_5m_25m_45m", "spot_5m_25m_45m", "oi_5m_25m_45m",
+        "vp_1h_vah_poc_val", "vp_weekly_vah_poc_val", "agent_status"
+    ])
+
+csv_bytes = df_weekly.to_csv(index=False).encode("utf-8")
+st.download_button(
+    label=f"📥 STÁHNOUT DATA Z TELEGRAMU / TÝDENNÍHO TESTU ({len(weekly_logs)} záznamů)",
+    data=csv_bytes,
+    file_name=f"okx_weekly_test_{get_prague_now().strftime('%Y%m%d_%H%M')}.csv",
+    mime="text/csv"
+)
 
 if st.button("🔄 AKTUALIZOVAT"):
     st.rerun()
 
-if st.button("📲 OTESTOVAT TELEGRAM & AI AGENTA"):
-    test_plan = build_trade_plan("SHORT", b_price, upper_p, lower_p, "TEST AI AGENT", sl_pct=0.0020, tp_mode="SPLIT_50_50")
-    test_msg = execute_okx_agent_trade(test_plan)
+# --- BEZPEČNÉ TESTOVACÍ TLAČÍTKO (NIKDY NEOTEVÍRÁ OBCHOD NA BURZE!) ---
+if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
+    api_status = "🟢 OKX API klíče načteny (AI Agent připraven)" if (OKX_SECRETS.get("ENABLED") and OKX_SECRETS.get("API_KEY")) else "🔴 AI Agent vypnutý nebo chybí klíče"
     ok = odesli_upozorneni(
         "TEST_PING",
-        "TEST SPOJENÍ TERMINÁL + TOP-DOWN UPGRADE 24/7",
-        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• S1 Top-Down (MACRO > MEDIUM > MICRO) + Upgrade přes 1H zámek i v paměti Bodu A\n• Logování 72H 1H Trendu a 7D Weekly Volume Profilu pro Argon 4 AI\nLive BTC: {b_price:.0f}$\n\n{test_msg}",
+        "TEST SPOJENÍ TERMINÁL (BEZ EXEKUCE)",
+        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• S1 Top-Down (MACRO ➔ MEDIUM ➔ MICRO) + Ochrana běžící pozice\n• Zapsané obchody v CSV seznamu: <b>{len(weekly_logs)}</b>\n• Stav AI Agenta: {api_status}\nLive BTC: {b_price:.0f}$",
         force=True
     )
     if ok:
-        st.success("Zpráva odeslána na Telegram!")
+        st.success("Testovací zpráva odeslána na Telegram (žádný obchod nebyl otevřen)!")
     else:
         st.error("Odeslání selhalo.")
 
