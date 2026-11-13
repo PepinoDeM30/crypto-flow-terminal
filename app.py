@@ -1491,13 +1491,11 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
         with ENGINE["lock"]:
             is_trade_busy = bool(ENGINE.get("has_open_or_pending", False))
 
-        # 1. Pokud už vystřelila nejvyšší skupina MACRO (rank 3), celý Setup 1 je na 1H uzamčen
         if rem_s1 > 0 and locked_rank >= 3:
             with ENGINE["lock"]:
                 ENGINE["s1_memory"]["active"] = False
             return f"🔒 Setup 1 [MACRO] uzamčen na 1H (zbývá {rem_s1 // 60 + 1} min) | Setup 2 povolen.", False
 
-        # 2. Pokud běží 1H zámek z nižší skupiny A NA BURZE JE STÁLE OTEVŘENÁ POZICE/LIMITKA, nesmíme ji přepsat!
         if rem_s1 > 0 and is_trade_busy:
             with ENGINE["lock"]:
                 ENGINE["s1_memory"]["active"] = False
@@ -1759,7 +1757,13 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
             )
             msg = f"{prefix}{active_header}\n{entry_txt}"
             if liquid_ok and entry_ok:
-                exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
+                res_agent = execute_okx_agent_trade(t_payload)
+                if isinstance(res_agent, tuple):
+                    exec_ok, agent_msg = res_agent
+                else:
+                    agent_msg = str(res_agent)
+                    exec_ok = ("ZADAL" in agent_msg or "Dry-Run" in agent_msg or "Exekuce vypnuta" in agent_msg)
+
                 poc_v, vah_v, val_v = vp_data
                 w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                 cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
@@ -1980,7 +1984,13 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             entry_txt = f"✅ MAKER {direction} (0.05% z {name}): {limit_entry_p:.0f}$ (1000$) | SL (0.30% Mkt): {t_payload['sl_market']:.0f}$ | Maker TP1: {t_payload['tp1_limit_50pct']:.0f}$ | Maker TP2: {t_payload['tp2_limit_50pct']:.0f}$"
                             triggered_msg = f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} {val:.0f}$): OI {best_oi_flush:.1f} | CVD Δ {cvd_diff:+.1f}\n{entry_txt}"
                             if liquid_ok:
-                                exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
+                                res_agent = execute_okx_agent_trade(t_payload)
+                                if isinstance(res_agent, tuple):
+                                    exec_ok, agent_msg = res_agent
+                                else:
+                                    agent_msg = str(res_agent)
+                                    exec_ok = ("ZADAL" in agent_msg or "Dry-Run" in agent_msg or "Exekuce vypnuta" in agent_msg)
+
                                 poc_v, vah_v, val_v = vp_data
                                 w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                                 cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
@@ -2037,7 +2047,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian_v11():
+def start_background_guardian_v12():
     my_token = str(uuid.uuid4())
     sys.__dict__["OKX_GUARDIAN_TOKEN"] = my_token
 
@@ -2069,7 +2079,7 @@ def start_background_guardian_v11():
     t.start()
     return my_token
 
-start_background_guardian_v11()
+start_background_guardian_v12()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -2081,7 +2091,7 @@ upper_p, upper_btc, lower_p, lower_btc = liq_data
 flow_metrics_tuple = (cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9)
 
 msg1, trg1 = scan_setup_1(c_300, c_1h, liquid_ok, m1_fut, b_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics_tuple)
-msg2, trg2, l_str = scan_setup_2(c_300, c_1h, liquid_ok, b_price, upper_p, lower_p, vp_data, flow_metrics_tuple)
+msg2, trg2, l_str = scan_setup_2(c_300, c_1h, fut_map, oi_change_map, liquid_ok, b_price, upper_p, lower_p, vp_data, flow_metrics_tuple)
 
 if trg1 or trg2:
     st.markdown('<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
