@@ -2329,7 +2329,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
         return "Načítám data Setupu 1...", False
 # === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
 
-# --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> OTOČKA NA UZAVŘENÝCH 5M SVÍČKÁCH (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC MEZI 2 SVÍČKAMI DO 9 SVÍČEK (BOD D) -> HNED MAKER VSTUP (BOD E) ---
+# --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> OTOČKA NEBO KNOTY NA UZAVŘENÝCH 5M SVÍČKÁCH (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC MEZI 2 SVÍČKAMI DO 9 SVÍČEK (BOD D) -> HNED MAKER VSTUP (BOD E) ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p, vp_data, flow_metrics, candles_1m_fut=None):
     try:
         rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
@@ -2454,9 +2454,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if not is_valid_macro_swing_sweep(val, is_high, form_idx, first_touch_idx):
                 continue
 
-            # BOD B & BOD C: Hledáme otočku po vybrání levelu (poslední svíčka ve směru sweepu + první uzavřená opačná svíčka)
-            # Pro LONG (is_high=False): poslední ČERVENÁ svíčka (close <= open) + první uzavřená ZELENÁ svíčka (close > open)
-            # Pro SHORT (is_high=True): poslední ZELENÁ svíčka (close >= open) + první uzavřená ČERVENÁ svíčka (close < open)
+            # BOD B & BOD C: Hledáme otočku po vybrání levelu na dvojici sousedních 5M svíček:
+            # Povolena je jak klasická otočka těl (Červená+Zelená / Zelená+Červená),
+            # tak opačné pořadí s knoty (např. nejnižší Zelená s knotem + Červená s knotem).
             lock_c_idx = None
             ref_b_idx = None
             oi_1_val = 0.0
@@ -2470,12 +2470,40 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 c_b1 = today_candles[b_idx]
                 c_b2 = today_candles[b_idx + 1]
 
+                rng_b1 = max(c_b1[2] - c_b1[3], 0.1)
+                rng_b2 = max(c_b2[2] - c_b2[3], 0.1)
+
                 if not is_high:
-                    # LONG: c_b1 musí být červená a c_b2 musí být zelená
-                    is_turn_pair = (c_b1[4] <= c_b1[1]) and (c_b2[4] > c_b2[1])
+                    # LONG:
+                    # 1) Klasická dvojice: 1. červená + 2. zelená
+                    classic_turn = (c_b1[4] <= c_b1[1]) and (c_b2[4] > c_b2[1])
+                    # 2) Knotová dvojice (např. nejnižší Zelená s knotem + Červená s knotem):
+                    # Obě svíčky mají spodní odmítnutí (close nad spodními 30 % rozpětí nebo spodní knot >= 30 %)
+                    low_wick_b1 = (min(c_b1[1], c_b1[4]) - c_b1[3]) / rng_b1
+                    low_wick_b2 = (min(c_b2[1], c_b2[4]) - c_b2[3]) / rng_b2
+                    close_pos_b1 = (c_b1[4] - c_b1[3]) / rng_b1
+                    close_pos_b2 = (c_b2[4] - c_b2[3]) / rng_b2
+                    wick_turn = (
+                        (low_wick_b1 >= 0.30 or close_pos_b1 >= 0.35) and
+                        (low_wick_b2 >= 0.30 or close_pos_b2 >= 0.35) and
+                        (low_wick_b1 >= 0.30 or low_wick_b2 >= 0.30)
+                    )
+                    is_turn_pair = classic_turn or wick_turn
                 else:
-                    # SHORT: c_b1 musí být zelená a c_b2 musí být červená
-                    is_turn_pair = (c_b1[4] >= c_b1[1]) and (c_b2[4] < c_b2[1])
+                    # SHORT:
+                    # 1) Klasická dvojice: 1. zelená + 2. červená
+                    classic_turn = (c_b1[4] >= c_b1[1]) and (c_b2[4] < c_b2[1])
+                    # 2) Knotová dvojice (např. nejvyšší Červená s knotem + Zelená s knotem):
+                    up_wick_b1 = (c_b1[2] - max(c_b1[1], c_b1[4])) / rng_b1
+                    up_wick_b2 = (c_b2[2] - max(c_b2[1], c_b2[4])) / rng_b2
+                    close_pos_b1 = (c_b1[2] - c_b1[4]) / rng_b1
+                    close_pos_b2 = (c_b2[2] - c_b2[4]) / rng_b2
+                    wick_turn = (
+                        (up_wick_b1 >= 0.30 or close_pos_b1 >= 0.35) and
+                        (up_wick_b2 >= 0.30 or close_pos_b2 >= 0.35) and
+                        (up_wick_b1 >= 0.30 or up_wick_b2 >= 0.30)
+                    )
+                    is_turn_pair = classic_turn or wick_turn
 
                 if not is_turn_pair:
                     continue
@@ -2492,7 +2520,12 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 cond_c2 = (oi_diff >= 30.0)
 
                 if cond_c1 or cond_c2:
-                    ref_b_idx = b_idx
+                    # Referenční svíčka z dvojice je vždy ta s nejnižším Low (pro LONG) nebo nejvyšším High (pro SHORT)
+                    if not is_high:
+                        ref_b_idx = b_idx if c_b1[3] <= c_b2[3] else (b_idx + 1)
+                    else:
+                        ref_b_idx = b_idx if c_b1[2] >= c_b2[2] else (b_idx + 1)
+
                     lock_c_idx = b_idx + 1
                     oi_1_val = oi_1
                     oi_2_val = oi_2
@@ -2510,14 +2543,15 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if lock_c_idx is None:
                 elapsed_from_touch = (n_today - 1) - first_touch_idx
                 if 0 <= elapsed_from_touch <= 8:
-                    turn_wait_str = "Červená+Zelená" if not is_high else "Zelená+Červená"
+                    turn_wait_str = "Otočka/Knoty 5M"
                     pending_status_msgs.append(
-                        f"⏳ Bod A ({name} vybrán) – čekám na Bod B ({turn_wait_str} 5M) & Bod C (OI Σ≤-50 nebo Δ≥30 BTC)"
+                        f"⏳ Bod A ({name} vybrán) – čekám na Bod B ({turn_wait_str}) & Bod C (OI Σ≤-50 nebo Δ≥30 BTC)"
                     )
                 continue
 
             # BOD D: Máme uzamčený Bod C v indexu lock_c_idx!
-            # Srovnáváme CVD původní svíčky (ref_b_idx) s každou uzavřenou červenou (pro Long) / zelenou (pro Short) svíčkou v okně 1 až 9 svíček po lock_c_idx
+            # Srovnáváme CVD nejnižší/nejvyšší svíčky z Bodu B (ref_b_idx) s každou uzavřenou testovací svíčkou
+            # (červenou nebo zelenou se spodním knotem >= 35 % pro Long / zelenou nebo červenou s horním knotem >= 35 % pro Short) v okně 1 až 9 svíček
             ref_ts = today_candles[ref_b_idx][0]
             ref_cvd = fut_map.get(ref_ts, 0.0)
 
@@ -2527,15 +2561,18 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             for d_idx in range(lock_c_idx + 1, max_d_idx + 1):
                 c_d = today_candles[d_idx]
                 ts_d = c_d[0]
+                rng_d = max(c_d[2] - c_d[3], 0.1)
 
                 if not is_high:
-                    # LONG: měříme uzavřenou ČERVENOU svíčku kdekoliv (i na nižším Low)
-                    is_target_color = (c_d[4] < c_d[1])
+                    # LONG: červená svíčka NEBO zelená svíčka s výrazným spodním knotem (>= 35 % rozpětí)
+                    low_wick_d = (min(c_d[1], c_d[4]) - c_d[3]) / rng_d
+                    is_target_candle = (c_d[4] < c_d[1]) or (low_wick_d >= 0.35)
                 else:
-                    # SHORT: měříme uzavřenou ZELENOU svíčku kdekoliv (i na vyšším High)
-                    is_target_color = (c_d[4] > c_d[1])
+                    # SHORT: zelená svíčka NEBO červená svíčka s výrazným horním knotem (>= 35 % rozpětí)
+                    up_wick_d = (c_d[2] - max(c_d[1], c_d[4])) / rng_d
+                    is_target_candle = (c_d[4] > c_d[1]) or (up_wick_d >= 0.35)
 
-                if not is_target_color:
+                if not is_target_candle:
                     continue
 
                 test_cvd = fut_map.get(ts_d, 0.0)
@@ -2559,7 +2596,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                         )
                         triggered_msg = (
                             f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} Trigger ➔ {oi_cond_label} ➔ Bod D CVD Δ {cvd_anomaly_diff:.1f} BTC "
-                            f"[1.sv: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f}])\n{entry_txt}"
+                            f"[Extrém sv.: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f}])\n{entry_txt}"
                         )
                         if liquid_ok:
                             res_agent = execute_okx_agent_trade(t_payload)
@@ -2591,7 +2628,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                 f"\n📊 <b>DATA PRO TÝDENNÍ ANALÝZU & ARGON 4 AI:</b>\n"
                                 f"• Čas: {now_str} | Setup: S2 ({name}) | Směr: {direction} | RRR: {t_payload['rrr']} | Pozice: 2000$\n"
                                 f"• Bod C (OI): {oi_cond_label} [1.sv: {oi_1_val:+.1f} / 2.sv: {oi_2_val:+.1f} BTC]\n"
-                                f"• Bod D (CVD 2 svíček): Rozdíl {cvd_anomaly_diff:.1f} BTC [1.sv: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f} BTC]\n"
+                                f"• Bod D (CVD 2 svíček): Rozdíl {cvd_anomaly_diff:.1f} BTC [Extrém sv.: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f} BTC]\n"
                                 f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
                                 f"• Makro & 1H VP: 1H Trend {trend_1h_str} | 1H VAH {vah_v:.0f}$ / POC {poc_v:.0f}$ / VAL {val_v:.0f}$\n"
                                 f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
@@ -2642,9 +2679,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
 
             candles_since_lock = (n_today - 1) - lock_c_idx
             if not anomaly_found and 0 <= candles_since_lock < 9:
-                wait_c_type = "červenou" if not is_high else "zelenou"
+                wait_c_type = "červenou/knotovou" if not is_high else "zelenou/knotovou"
                 pending_status_msgs.append(
-                    f"🔒 {name} Bod C uzamčen ({oi_cond_label} | Ref CVD: {ref_cvd:+.1f} BTC) – "
+                    f"🔒 {name} Bod C uzamčen ({oi_cond_label} | Extrém CVD: {ref_cvd:+.1f} BTC) – "
                     f"čekám na Bod D: uzavřenou {wait_c_type} 5M svíčku s CVD rozdílem ≥100 BTC (zbývá {9 - candles_since_lock} sv.)"
                 )
 
@@ -2652,7 +2689,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             return triggered_msg, is_triggered, levels_str
         elif pending_status_msgs:
             return " | ".join(pending_status_msgs), False, levels_str
-        return "Skenuji Setup 2 (Bod A: Makro Level Trigger ➔ Bod B: Otočka 5M ➔ Bod C: OI Σ≤-50 / Δ≥30 ➔ Bod D: CVD Δ≥100 BTC do 9 sv. ➔ Bod E: Hned Vstup)...", False, levels_str
+        return "Skenuji Setup 2 (Bod A: Makro Level Trigger ➔ Bod B: Otočka/Knoty 5M ➔ Bod C: OI Σ≤-50 / Δ≥30 ➔ Bod D: CVD Δ≥100 BTC do 9 sv. ➔ Bod E: Hned Vstup)...", False, levels_str
     except Exception:
         return "Načítám levely...", False, ""
 
@@ -2884,7 +2921,7 @@ setups_html = "\n".join([
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: BOD A (LEVEL TRIGGER) ➔ BOD B (OTOČKA 5M) ➔ BOD C (OI Σ≤-50 / Δ≥30) ➔ BOD D (CVD Δ≥100 DO 9 SV.) ➔ BOD E (HNED 2000$)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: BOD A (LEVEL TRIGGER) ➔ BOD B (OTOČKA/KNOTY 5M) ➔ BOD C (OI Σ≤-50 / Δ≥30) ➔ BOD D (CVD Δ≥100 DO 9 SV.) ➔ BOD E (HNED 2000$)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2.replace(chr(10), "<br>")}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -2951,7 +2988,7 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ TERMINÁL (BEZ EXEKUCE)",
-        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1: Uzavřené 5M svíčky + Bod B (1M CVD LL/HH nebo průraz 5M Box CVD) + volný PB vstup\n• S2: Bod A (Level Trigger) ➔ Bod B (Otočka 5M) ➔ Bod C (OI Σ≤-50 / Δ≥30) ➔ Bod D (CVD Δ≥100 BTC do 9 sv.) ➔ Bod E (Hned Maker vstup)\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
+        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1: Uzavřené 5M svíčky + Bod B (1M CVD LL/HH nebo průraz 5M Box CVD) + volný PB vstup\n• S2: Bod A (Level Trigger) ➔ Bod B (Otočka/Knoty 5M) ➔ Bod C (OI Σ≤-50 / Δ≥30) ➔ Bod D (CVD Δ≥100 BTC do 9 sv.) ➔ Bod E (Hned Maker vstup)\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
         force=True
     )
     if ok:
