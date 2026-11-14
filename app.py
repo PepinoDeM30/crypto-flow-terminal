@@ -1261,136 +1261,6 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, 
     elif tp_mode == "HALF_LIQ":
         tp_info_str = f"Maker TP (100% 1/2 Liq): {pl['tp1_limit_50pct']:.0f}$"
     else:
-        tp_info_str = f"Maker TP1 (50%): {pl['tp1_limit_50pct']:.0f}$\vert{} Maker TP2 (50\%): {pl['tp2_limit_50pct']:.0f}$"
-
-    txt += f" | SL ({sl_pct*100:.2f}% Mkt): {pl['sl_market']:.0f}$ | {tp_info_strTady je **ČÁST 3 ze 4** (obsahuje exekuční logiku 1M grafu, výpočet likvidačních magnetů, stahování OKX dat a kompletní **Setup 1**).
-
-Až ji vložíš přímo pod `# === KONEC ČÁSTI 2 ===`, napiš **dalsi** a pošlu ti poslední **ČÁST 4** (s novým **Setupem 2** a vykreslením terminálu).
-
-### ČÁST 3 (3/4)
-
-```python
-# === ZAČÁTEK ČÁSTI 3 ===
-
-# --- EXEKUČNÍ ENGINE SETUPU 1: BOD A (UZAMČENÍ BOXU) -> BOD B (VARIANTA 1: 1M CVD LL/HH NEBO VARIANTA 2: PRŮRAZ POSLEDNÍHO 5M CVD LOW/HIGH V KRABICI) -> BOD C (PULLBACK KDEKOLIV) ---
-def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, lower_p, setup_label, fut_map=None, pb_pct=0.0012, sl_pct=0.0030, tp_mode="SPLIT_50_50", box_mid=0.0):
-    mf = c1f[:90][::-1] if len(c1f) >= 90 else c1f[::-1]
-
-    if len(mf) < 12:
-        pl = build_trade_plan(direction, btc_price, upper_p, lower_p, setup_label, sl_pct=sl_pct, tp_mode=tp_mode)
-        return False, "⏳ Čekám na 1M data...", pl
-
-    n = len(mf)
-    anch_f = compute_anchored_1m_map(mf, fut_map, is_spot=False)
-
-    cf, rf = [], 0.0
-    ts_list, o1, h1, l1, c1 = [], [], [], [], []
-
-    for i in range(n):
-        rf += compute_single_1m_delta(mf[i], is_spot=False, anchored_map=anch_f)
-        cf.append(rf)
-        ts_list.append(int(mf[i][0]))
-        o1.append(float(mf[i][1]))
-        h1.append(float(mf[i][2]))
-        l1.append(float(mf[i][3]))
-        c1.append(float(mf[i][4]))
-
-    c1[-1] = btc_price
-    h1[-1] = max(h1[-1], btc_price)
-    l1[-1] = min(l1[-1], btc_price)
-
-    c_idx = 4
-    for idx, t_val in enumerate(ts_list):
-        if t_val <= confirm_1m_ts:
-            c_idx = idx
-    c_idx = max(4, min(c_idx, n - 1))
-
-    # Poslední 5M svíčka uzamčené krabice (5 minutových svíček končících v c_idx)
-    start_5m_idx = max(0, c_idx - 4)
-    last_5m_cvd_slice = cf[start_5m_idx:c_idx + 1]
-    last_5m_cvd_low = min(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
-    last_5m_cvd_high = max(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
-
-    def _track_post_lock_cvd_break(is_bullish):
-        if c_idx >= n - 1:
-            return False, -1, ""
-
-        local_swing_ref = None
-
-        for k in range(c_idx + 1, n):
-            if is_bullish:
-                # VARIANTA 1: Nové 1M CVD Higher High (HH) vytvořené po uzamčení krabice
-                if k >= c_idx + 2:
-                    prev_i = k - 1
-                    if cf[prev_i] >= cf[prev_i - 1] and cf[k] < cf[prev_i]:
-                        if local_swing_ref is None or cf[prev_i] < local_swing_ref:
-                            local_swing_ref = cf[prev_i]
-                if local_swing_ref is not None and cf[k] > local_swing_ref:
-                    return True, k, "1M CVD HH"
-
-                # VARIANTA 2: Hned po přepnutí na 1M (nebo formací 1M svíček ve směru Longu) prorazí poslední 5M CVD High z krabice
-                if cf[k] > last_5m_cvd_high and (cf[k] - cf[c_idx]) >= 3.0:
-                    return True, k, "Průraz 5M Box CVD High"
-            else:
-                # VARIANTA 1: Nové 1M CVD Lower Low (LL) vytvořené po uzamčení krabice
-                if k >= c_idx + 2:
-                    prev_i = k - 1
-                    if cf[prev_i] <= cf[prev_i - 1] and cf[k] > cf[prev_i]:
-                        if local_swing_ref is None or cf[prev_i] > local_swing_ref:
-                            local_swing_ref = cf[prev_i]
-                if local_swing_ref is not None and cf[k] < local_swing_ref:
-                    return True, k, "1M CVD LL"
-
-                # VARIANTA 2: Hned po přepnutí na 1M (nebo formací 1M svíček ve směru Shortu) prorazí poslední 5M CVD Low z krabice
-                if cf[k] < last_5m_cvd_low and (cf[c_idx] - cf[k]) >= 3.0:
-                    return True, k, "Průraz 5M Box CVD Low"
-
-        return False, -1, ""
-
-    trg = False
-    txt = ""
-    plan_entry = btc_price
-    confirm_dt_str = datetime.fromtimestamp((confirm_1m_ts + 60000) / 1000, get_prague_now().tzinfo).strftime("%H:%M")
-
-    if direction == "SHORT":
-        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=False)
-
-        if f_ok:
-            trough_p = min(l1[f_brk_idx:])
-            lmt_p = trough_p * (1.0 + pb_pct)
-            plan_entry = lmt_p
-            if btc_price >= lmt_p or (f_brk_idx + 1 < n and max(h1[f_brk_idx + 1:]) >= lmt_p):
-                trg = True
-                plan_entry = max(btc_price, lmt_p)
-                txt = f"✅ MAKER SHORT AKTIVOVÁN (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$ (2000$)"
-            else:
-                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB nahoru na {lmt_p:.0f}$)"
-        else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD LL nebo průraz posledního 5M CVD Low po {confirm_dt_str})"
-    else:
-        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=True)
-
-        if f_ok:
-            peak_p = max(h1[f_brk_idx:])
-            lmt_p = peak_p * (1.0 - pb_pct)
-            plan_entry = lmt_p
-            if btc_price <= lmt_p or (f_brk_idx + 1 < n and min(l1[f_brk_idx + 1:]) <= lmt_p):
-                trg = True
-                plan_entry = min(btc_price, lmt_p)
-                txt = f"✅ MAKER LONG AKTIVOVÁN (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$ (2000$)"
-            else:
-                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB dolů na {lmt_p:.0f}$)"
-        else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD HH nebo průraz posledního 5M CVD High po {confirm_dt_str})"
-
-    pl = build_trade_plan(direction, plan_entry, upper_p, lower_p, setup_label, sl_pct=sl_pct, tp_mode=tp_mode)
-    pl["trigger_ready"] = trg
-
-    if tp_mode == "FULL_LIQ":
-        tp_info_str = f"Maker TP (100% Liq): {pl['tp2_limit_50pct']:.0f}$"
-    elif tp_mode == "HALF_LIQ":
-        tp_info_str = f"Maker TP (100% 1/2 Liq): {pl['tp1_limit_50pct']:.0f}$"
-    else:
         tp_info_str = f"Maker TP1 (50%): {pl['tp1_limit_50pct']:.0f}$ | Maker TP2 (50%): {pl['tp2_limit_50pct']:.0f}$"
 
     txt += f" | SL ({sl_pct*100:.2f}% Mkt): {pl['sl_market']:.0f}$ | {tp_info_str}"
@@ -1541,11 +1411,11 @@ def fetch_okx_data():
             if btc_price < float(candles_300[0][3]):
                 candles_300[0][3] = str(btc_price)
 
-        c_12_desc = [list(c) for c in candles_300] if len(candles_300) >= 12 else [list(c) for c in candles_300]
+        c_12_desc = [list(c) for c in candles_300[0:12]] if len(candles_300) >= 12 else [list(c) for c in candles_300]
         c_12_asc = c_12_desc[::-1]
         candle_close_map = {int(c[0]): float(c[4]) for c in candles_300}
 
-        vol_res = requests.get(f"[https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t=](https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t=){ts}", timeout=5).json().get("data", [])
+        vol_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         fut_map = {}
         for row in vol_res:
             try:
@@ -1556,7 +1426,7 @@ def fetch_okx_data():
             except Exception:
                 continue
 
-        spot_res = requests.get(f"[https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t=](https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t=){ts}", timeout=5).json().get("data", [])
+        spot_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SPOT&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         spot_map = {}
         for row in spot_res:
             try:
@@ -1579,7 +1449,7 @@ def fetch_okx_data():
             cvd_12.append(fut_map.get(open_ts, 0.0))
             scvd_12.append(spot_map.get(open_ts, 0.0))
 
-        oi_res = requests.get(f"[https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t=](https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t=){ts}", timeout=5).json().get("data", [])
+        oi_res = requests.get(f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=5m&limit=100&t={ts}", timeout=5).json().get("data", [])
         oi_change_map = {}
         if len(oi_res) >= 2:
             for idx in range(len(oi_res) - 1):
@@ -1663,8 +1533,8 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 elif mem["direction"] == "LONG" and btc_price < mem["zone_extreme_p"] * 0.9982:
                     mem["active"] = False
 
-        # VÝHRADNĚ UZAVŘENÉ 5M SVÍČKY (candles_300[0] je právě běžící neuzavřená svíčka -> bereme)
-        c_42_desc = [list(c) for c in candles_300]
+        # VÝHRADNĚ UZAVŘENÉ 5M SVÍČKY (candles_300[0] je právě běžící neuzavřená svíčka -> bereme [1:43])
+        c_42_desc = [list(c) for c in candles_300[1:43]]
         c_42_asc = c_42_desc[::-1]
         c_36_asc = c_42_asc[-36:]
 
