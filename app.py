@@ -20,7 +20,7 @@ from plotly.subplots import make_subplots
 # --- NASTAVENÍ TELEGRAM NOTIFIKACÍ A PARAMETRŮ ---
 TELEGRAM_BOT_TOKEN = "9068673685:AAEwXgVLOdO-kZ3Pvm3ATu87vZ6eZ-zP-cY"
 TELEGRAM_CHAT_ID = "9209356727"
-ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v13.json"
+ALERT_STATE_FILE = "/tmp/okx_telegram_buffer_v14.json"
 WEEKLY_LOG_FILE = "/tmp/okx_weekly_trades_log.json"
 WEEKLY_LOG_BACKUP = "okx_weekly_trades_log.json"
 
@@ -45,7 +45,7 @@ except Exception:
     OKX_SECRETS = {"ENABLED": False}
 
 @st.cache_resource
-def get_realtime_engine_v13():
+def get_realtime_engine_v14():
     if "OKX_GLOBAL_LOCK" not in sys.__dict__:
         sys.__dict__["OKX_GLOBAL_LOCK"] = threading.Lock()
     return {
@@ -69,6 +69,7 @@ def get_realtime_engine_v13():
         },
         "s1_memory": {
             "active": False,
+            "v14_chrono_ok": True,
             "direction": "",
             "group_id": "",
             "setup_label": "",
@@ -99,7 +100,7 @@ def get_realtime_engine_v13():
         "be_moved_algos": set()
     }
 
-ENGINE = get_realtime_engine_v13()
+ENGINE = get_realtime_engine_v14()
 
 def _load_alert_history():
     try:
@@ -232,7 +233,6 @@ def odesli_upozorneni(lock_key, setup_nazev, detail_zpravy, lock_duration=3600, 
         if res.status_code == 200:
             return True
 
-        # Fallback: pokud by Telegram z jakéhokoliv důvodu odmítl HTML, odešleme čistý text
         plain_text = re.sub(r"<[^>]+>", "", f"🚨 {safe_title}\n\n{safe_detail}")
         res_plain = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": plain_text}, timeout=5)
         return res_plain.status_code == 200
@@ -1140,11 +1140,11 @@ def compute_weekly_volume_profile(candles_1h):
     except Exception:
         return 0.0, 0.0, 0.0
 
-# --- EXEKUČNÍ ENGINE SETUPU 1: BOD A (T_confirm) -> BOD B (1M FUTURES CVD BREAK) -> BOD C (PULLBACK + KONTROLA STŘEDU KRABICE) ---
+# --- EXEKUČNÍ ENGINE SETUPU 1: BOD A (UZAMČENÍ BOXU) -> BOD B (VARIANTA 1: 1M CVD LL/HH NEBO VARIANTA 2: PRŮRAZ POSLEDNÍHO 5M CVD LOW/HIGH V KRABICI) -> BOD C (PULLBACK KDEKOLIV) ---
 def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, lower_p, setup_label, fut_map=None, pb_pct=0.0012, sl_pct=0.0030, tp_mode="SPLIT_50_50", box_mid=0.0):
-    mf = c1f[:60][::-1] if len(c1f) >= 60 else c1f[::-1]
+    mf = c1f[:90][::-1] if len(c1f) >= 90 else c1f[::-1]
 
-    if len(mf) < 10:
+    if len(mf) < 12:
         pl = build_trade_plan(direction, btc_price, upper_p, lower_p, setup_label, sl_pct=sl_pct, tp_mode=tp_mode)
         return False, "⏳ Čekám na 1M data...", pl
 
@@ -1167,85 +1167,89 @@ def evaluate_setup1_1m_entry(direction, confirm_1m_ts, c1f, btc_price, upper_p, 
     h1[-1] = max(h1[-1], btc_price)
     l1[-1] = min(l1[-1], btc_price)
 
-    c_idx = 3
+    c_idx = 4
     for idx, t_val in enumerate(ts_list):
         if t_val <= confirm_1m_ts:
             c_idx = idx
-    c_idx = max(3, min(c_idx, n - 1))
+    c_idx = max(4, min(c_idx, n - 1))
 
-    def _track_dynamic_1m_cvd_break(series, is_bullish):
-        lookback_start = max(1, c_idx - 10)
-        ref_level = None
+    # Poslední 5M svíčka uzamčené krabice (5 minutových svíček končících v c_idx)
+    start_5m_idx = max(0, c_idx - 4)
+    last_5m_cvd_slice = cf[start_5m_idx:c_idx + 1]
+    last_5m_cvd_low = min(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
+    last_5m_cvd_high = max(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
 
-        for k in range(c_idx - 1, lookback_start - 1, -1):
-            if is_bullish:
-                if series[k] >= series[k - 1] and series[k] >= series[k + 1]:
-                    ref_level = series[k]
-                    break
-            else:
-                if series[k] <= series[k - 1] and series[k] <= series[k + 1]:
-                    ref_level = series[k]
-                    break
+    def _track_post_lock_cvd_break(is_bullish):
+        if c_idx >= n - 1:
+            return False, -1, ""
 
-        if ref_level is None:
-            pre_slice = series[max(0, c_idx - 6):c_idx + 1]
-            ref_level = max(pre_slice) if is_bullish else min(pre_slice)
+        local_swing_ref = None
 
         for k in range(c_idx + 1, n):
             if is_bullish:
-                if series[k] > ref_level:
-                    return True, k, ref_level
-                if (k - 1) > c_idx and series[k - 1] > series[k - 2] and series[k] < series[k - 1]:
-                    ref_level = series[k - 1]
-            else:
-                if series[k] < ref_level:
-                    return True, k, ref_level
-                if (k - 1) > c_idx and series[k - 1] < series[k - 2] and series[k] > series[k - 1]:
-                    ref_level = series[k - 1]
+                # VARIANTA 1: Nové 1M CVD Higher High (HH) vytvořené po uzamčení krabice
+                if k >= c_idx + 2:
+                    prev_i = k - 1
+                    if cf[prev_i] >= cf[prev_i - 1] and cf[k] < cf[prev_i]:
+                        if local_swing_ref is None or cf[prev_i] < local_swing_ref:
+                            local_swing_ref = cf[prev_i]
+                if local_swing_ref is not None and cf[k] > local_swing_ref:
+                    return True, k, "1M CVD HH"
 
-        return False, -1, ref_level
+                # VARIANTA 2: Hned po přepnutí na 1M (nebo formací 1M svíček ve směru Longu) prorazí poslední 5M CVD High z krabice
+                if cf[k] > last_5m_cvd_high and (cf[k] - cf[c_idx]) >= 3.0:
+                    return True, k, "Průraz 5M Box CVD High"
+            else:
+                # VARIANTA 1: Nové 1M CVD Lower Low (LL) vytvořené po uzamčení krabice
+                if k >= c_idx + 2:
+                    prev_i = k - 1
+                    if cf[prev_i] <= cf[prev_i - 1] and cf[k] > cf[prev_i]:
+                        if local_swing_ref is None or cf[prev_i] > local_swing_ref:
+                            local_swing_ref = cf[prev_i]
+                if local_swing_ref is not None and cf[k] < local_swing_ref:
+                    return True, k, "1M CVD LL"
+
+                # VARIANTA 2: Hned po přepnutí na 1M (nebo formací 1M svíček ve směru Shortu) prorazí poslední 5M CVD Low z krabice
+                if cf[k] < last_5m_cvd_low and (cf[c_idx] - cf[k]) >= 3.0:
+                    return True, k, "Průraz 5M Box CVD Low"
+
+        return False, -1, ""
 
     trg = False
     txt = ""
     plan_entry = btc_price
-    confirm_dt_str = datetime.fromtimestamp(confirm_1m_ts / 1000, get_prague_now().tzinfo).strftime("%H:%M")
+    confirm_dt_str = datetime.fromtimestamp((confirm_1m_ts + 60000) / 1000, get_prague_now().tzinfo).strftime("%H:%M")
 
     if direction == "SHORT":
-        f_ok, f_brk_idx, _ = _track_dynamic_1m_cvd_break(cf, is_bullish=False)
+        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=False)
 
         if f_ok:
             trough_p = min(l1[f_brk_idx:])
             lmt_p = trough_p * (1.0 + pb_pct)
             plan_entry = lmt_p
-            if box_mid > 0 and (lmt_p < box_mid or btc_price < box_mid):
-                trg = False
-                txt = f"⛔ Zrušeno: Cena ({btc_price:.0f}$) nebo 1M limitka ({lmt_p:.0f}$) utekla pod střed krabice ({box_mid:.0f}$)"
-            elif btc_price >= lmt_p or (f_brk_idx + 1 < n and max(h1[f_brk_idx + 1:]) >= lmt_p):
+            if btc_price >= lmt_p or (f_brk_idx + 1 < n and max(h1[f_brk_idx + 1:]) >= lmt_p):
                 trg = True
                 plan_entry = max(btc_price, lmt_p)
-                txt = f"✅ MAKER SHORT AKTIVOVÁN (Potvrzeno {confirm_dt_str} ➔ 1M CVD LL + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER SHORT AKTIVOVÁN (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
-                txt = f"⏳ Bod B splněn (1M CVD LL po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB nahoru na {lmt_p:.0f}$)"
+                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB nahoru na {lmt_p:.0f}$)"
         else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (průraz 1M Futures CVD Low po {confirm_dt_str})"
+            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD LL nebo průraz posledního 5M CVD Low po {confirm_dt_str})"
     else:
-        f_ok, f_brk_idx, _ = _track_dynamic_1m_cvd_break(cf, is_bullish=True)
+        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=True)
 
         if f_ok:
             peak_p = max(h1[f_brk_idx:])
             lmt_p = peak_p * (1.0 - pb_pct)
             plan_entry = lmt_p
-            if box_mid > 0 and (lmt_p > box_mid or btc_price > box_mid):
-                trg = False
-                txt = f"⛔ Zrušeno: Cena ({btc_price:.0f}$) nebo 1M limitka ({lmt_p:.0f}$) utekla nad střed krabice ({box_mid:.0f}$)"
-            elif btc_price <= lmt_p or (f_brk_idx + 1 < n and min(l1[f_brk_idx + 1:]) <= lmt_p):
+            if btc_price <= lmt_p or (f_brk_idx + 1 < n and min(l1[f_brk_idx + 1:]) <= lmt_p):
                 trg = True
                 plan_entry = min(btc_price, lmt_p)
-                txt = f"✅ MAKER LONG AKTIVOVÁN (Potvrzeno {confirm_dt_str} ➔ 1M CVD HH + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
+                txt = f"✅ MAKER LONG AKTIVOVÁN (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$"
             else:
-                txt = f"⏳ Bod B splněn (1M CVD HH po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB dolů na {lmt_p:.0f}$)"
+                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB dolů na {lmt_p:.0f}$)"
         else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (průraz 1M Futures CVD High po {confirm_dt_str})"
+            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD HH nebo průraz posledního 5M CVD High po {confirm_dt_str})"
 
     pl = build_trade_plan(direction, plan_entry, upper_p, lower_p, setup_label, sl_pct=sl_pct, tp_mode=tp_mode)
     pl["trigger_ready"] = trg
@@ -1488,7 +1492,7 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: TOP-DOWN 3 SKUPINY + 4 POJISTKY (50% RESET DOTEKŮ, ZÁKAZ SJEZDOVKY/PUMPY, OBOUSTRANNÉ ZRUŠENÍ PAMĚTI & STŘED KRABICE) ---
+# --- SETUP 1: MĚŘENÍ VÝHRADNĚ NA UZAVŘENÝCH 5M SVÍČKÁCH + UZAMČENÍ BODU A DOPŘEDU + BOD B (1M CVD LL/HH NEBO PRŮRAZ POSLEDNÍHO 5M CVD Z KRABICE) + VOLNÝ VSTUP ---
 def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics):
     try:
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
@@ -1509,26 +1513,26 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
             locked_lbl = rank_name_map.get(locked_rank, "S1")
             return f"🔒 Setup 1 [{locked_lbl}] má aktivní pozici/limitku na burze (zbývá {rem_s1 // 60 + 1} min zámku) – čekám na dokončení obchodu.", False
 
-        if len(candles_300) < 42:
+        if len(candles_300) < 44:
             return "Načítám Top-Down 15M–180M strukturu svíček...", False
 
         now_sec = time.time()
         with ENGINE["lock"]:
             mem = ENGINE["s1_memory"]
+            if not mem.get("v14_chrono_ok", False):
+                mem["active"] = False
+                mem["v14_chrono_ok"] = True
+
             if mem["active"]:
-                mem_mid = float(mem.get("box_mid", 0.0))
                 if (now_sec - mem["locked_at_sec"]) > S1_MEMORY_TTL_SEC:
                     mem["active"] = False
-                elif mem["direction"] == "SHORT":
-                    # Zrušení při prasknutí nahoru NEBO když cena uteče dolů pod střed krabice bez nás
-                    if btc_price > mem["zone_extreme_p"] * 1.0018 or (mem_mid > 0 and btc_price < mem_mid):
-                        mem["active"] = False
-                elif mem["direction"] == "LONG":
-                    # Zrušení při prasknutí dolů NEBO když cena uteče nahoru nad střed krabice bez nás
-                    if btc_price < mem["zone_extreme_p"] * 0.9982 or (mem_mid > 0 and btc_price > mem_mid):
-                        mem["active"] = False
+                elif mem["direction"] == "SHORT" and btc_price > mem["zone_extreme_p"] * 1.0018:
+                    mem["active"] = False
+                elif mem["direction"] == "LONG" and btc_price < mem["zone_extreme_p"] * 0.9982:
+                    mem["active"] = False
 
-        c_42_desc = [list(c) for c in candles_300[:42]]
+        # VÝHRADNĚ UZAVŘENÉ 5M SVÍČKY (candles_300[0] je právě běžící neuzavřená svíčka -> bereme [1:43])
+        c_42_desc = [list(c) for c in candles_300[1:43]]
         c_42_asc = c_42_desc[::-1]
         c_36_asc = c_42_asc[-36:]
 
@@ -1591,7 +1595,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 base_mx = max(body_highs_36[-min_b:])
                 base_mn = min(body_lows_36[-min_b:])
                 base_spr = ((base_mx - base_mn) / max(base_mn, 1.0)) * 100.0
-                status_summaries.append(f"{g_name}: {min_b*5}M těla {base_spr:.2f}% nad {max_spr:.2f}%")
+                status_summaries.append(f"{g_name}: {min_b*5}M uzavřená těla {base_spr:.2f}% nad {max_spr:.2f}%")
                 continue
 
             for k_test in range(max_valid_k, min_b - 1, -1):
@@ -1608,7 +1612,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 box_mid = (box_max_b + box_min_b) / 2.0
                 box_spr_pct = (box_height / box_min_b) * 100.0 if box_min_b > 0 else 0.0
 
-                # POJISTKA 2A: Zpřísněný test vodorovnosti (levá vs. pravá půlka max. 30 % max_spr + test 3 třetin)
+                # Test vodorovnosti krabice
                 half_k = max(1, k_test // 2)
                 mean_first = sum(sub_c[:half_k]) / half_k
                 mean_second = sum(sub_c[half_k:]) / max(1, k_test - half_k)
@@ -1620,9 +1624,9 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 m_t3 = sum(sub_c[2 * third_k:]) / max(1, k_test - 2 * third_k)
                 third_diff_pct = ((max(m_t1, m_t2, m_t3) - min(m_t1, m_t2, m_t3)) / box_min_b) * 100.0 if box_min_b > 0 else 0.0
 
-                is_flat_box = (slope_diff_pct <= (max_spr * 0.30)) and (third_diff_pct <= (max_spr * 0.40))
+                is_flat_box = (slope_diff_pct <= (max_spr * 0.35)) and (third_diff_pct <= (max_spr * 0.45))
 
-                # POJISTKA 2B: Pre-Box Impulse Guard (6 svíček / 30 min před začátkem krabice)
+                # Pre-Box Impulse Guard (6 uzavřených svíček před začátkem krabice)
                 box_start_42 = 42 - k_test
                 pre_start_42 = max(0, box_start_42 - 6)
                 if box_start_42 > pre_start_42:
@@ -1635,9 +1639,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 dump_into_box_pct = ((pre_max_p - box_min_b) / box_min_b) * 100.0 if box_min_b > 0 else 0.0
                 impulse_limit_pct = max(0.42, max_spr * 1.35)
 
-                # Pokud krabici předcházel prudký vertikální výstřel a krabice visí v horní polovině této pumpy -> zákaz LONGU
                 block_long_after_pump = (pump_into_box_pct > impulse_limit_pct) and (box_min_b > (pre_min_p + (box_max_b - pre_min_p) * 0.45))
-                # Pokud krabici předcházel prudký propad a krabice visí ve spodní polovině tohoto propadu -> zákaz SHORTU
                 block_short_after_dump = (dump_into_box_pct > impulse_limit_pct) and (box_max_b < (pre_max_p - (pre_max_p - box_min_b) * 0.45))
 
                 cvd_all = sum(fut_map.get(t_o, 0.0) for t_o in sub_ts)
@@ -1646,7 +1648,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 box_cvd_long = min(cvd_all, cvd_no_first)
                 box_spot_val = sum(spot_map.get(t_o, 0.0) for t_o in sub_ts)
 
-                # POJISTKA 1: Oddělené otesty hrany – reset vyžaduje návrat na STŘED KRABICE (box_mid = 50 %)!
+                # Oddělené otesty hrany (50% reset na střed krabice)
                 top_floor = box_max_b - (box_height * 0.25)
                 top_reset = box_mid
                 upper_touches = []
@@ -1685,30 +1687,30 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 if in_bot_touch:
                     lower_touches.append(best_bot_idx)
 
-                # V platné krabici musí být otestována jak horní, tak spodní hrana (zákaz jednostranné sjezdovky)
                 both_boundaries_defined = (len(upper_touches) >= 1 and len(lower_touches) >= 1)
 
-                in_upper_half = (btc_price >= box_mid)
-                in_lower_half = (btc_price <= box_mid)
+                end_in_upper = (sub_c[-1] >= box_mid or sub_h[-1] >= top_floor)
+                end_in_lower = (sub_c[-1] <= box_mid or sub_l[-1] <= bot_ceil)
 
                 if k_test == max_valid_k:
                     best_abs_cvd = box_cvd_short if abs(box_cvd_short) >= abs(box_cvd_long) else box_cvd_long
                     status_summaries.append(
-                        f"{g_name} ({k_test*5}M | {box_spr_pct:.2f}%≤{max_spr:.2f}% | T:{len(upper_touches)}↑/{len(lower_touches)}↓ | CVD {best_abs_cvd:+.0f}/{req_cvd:.0f})"
+                        f"{g_name} ({k_test*5}M uzavř. | {box_spr_pct:.2f}%≤{max_spr:.2f}% | T:{len(upper_touches)}↑/{len(lower_touches)}↓ | CVD {best_abs_cvd:+.0f}/{req_cvd:.0f})"
                     )
 
+                # Čas uzamčení Bodu A = KONEC poslední uzavřené 5M svíčky v krabici (poslední 1M svíčka této 5M periody)
+                box_lock_1m_ts = sub_ts[-1] + 240000
+
                 if (is_flat_box and both_boundaries_defined and not block_short_after_dump and
-                        len(upper_touches) >= req_touches and in_upper_half and box_cvd_short > req_cvd):
-                    last_t_ts = sub_ts[upper_touches[-1]]
-                    tm_conf = get_1m_extreme_ts(candles_1m_fut, last_t_ts, last_t_ts + 300000, is_high=True)
+                        len(upper_touches) >= req_touches and end_in_upper and box_cvd_short > req_cvd):
                     detected_dir = "SHORT"
                     detected_group = g_name
                     detected_label = f"SETUP 1 ({g_name}): BEARISH BOX"
                     detected_header = (
-                        f"🔥 S1 [{g_name}] BEARISH BOX ({k_test*5}M | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
-                        f"{len(upper_touches)}x horní otest (50% reset) | CVD {box_cvd_short:+.1f} ≥ +{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
+                        f"🔥 S1 [{g_name}] BEARISH BOX ({k_test*5}M uzavř. | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
+                        f"{len(upper_touches)}x horní otest | CVD {box_cvd_short:+.1f} ≥ +{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
-                    detected_confirm_ts = tm_conf
+                    detected_confirm_ts = box_lock_1m_ts
                     detected_zone_p = max(sub_h)
                     detected_box_mid = box_mid
                     detected_pb = g_pb
@@ -1721,17 +1723,15 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     break
 
                 elif (is_flat_box and both_boundaries_defined and not block_long_after_pump and
-                      len(lower_touches) >= req_touches and in_lower_half and box_cvd_long < -req_cvd):
-                    last_t_ts = sub_ts[lower_touches[-1]]
-                    tm_conf = get_1m_extreme_ts(candles_1m_fut, last_t_ts, last_t_ts + 300000, is_high=False)
+                      len(lower_touches) >= req_touches and end_in_lower and box_cvd_long < -req_cvd):
                     detected_dir = "LONG"
                     detected_group = g_name
                     detected_label = f"SETUP 1 ({g_name}): BULLISH BOX"
                     detected_header = (
-                        f"🔥 S1 [{g_name}] BULLISH BOX ({k_test*5}M | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
-                        f"{len(lower_touches)}x spodní otest (50% reset) | CVD {box_cvd_long:+.1f} ≤ -{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
+                        f"🔥 S1 [{g_name}] BULLISH BOX ({k_test*5}M uzavř. | Body {box_spr_pct:.2f}% ≤ {max_spr:.2f}% | "
+                        f"{len(lower_touches)}x spodní otest | CVD {box_cvd_long:+.1f} ≤ -{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
-                    detected_confirm_ts = tm_conf
+                    detected_confirm_ts = box_lock_1m_ts
                     detected_zone_p = min(sub_l)
                     detected_box_mid = box_mid
                     detected_pb = g_pb
@@ -1810,10 +1810,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 active_dir, active_confirm_ts, candles_1m_fut, btc_price, upper_p, lower_p,
                 active_label, fut_map, pb_pct=active_pb, sl_pct=active_sl, tp_mode=active_tp_mode, box_mid=active_box_mid
             )
-            if "⛔ Zrušeno:" in entry_txt:
-                with ENGINE["lock"]:
-                    ENGINE["s1_memory"]["active"] = False
-                return entry_txt, False
 
             msg = f"{prefix}{active_header}\n{entry_txt}"
             if liquid_ok and entry_ok:
@@ -1833,7 +1829,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     f"\n📊 <b>DATA PRO TÝDENNÍ ANALÝZU & ARGON 4 AI:</b>\n"
                     f"• Čas: {now_str} | Skupina: {active_group} | Směr: {active_dir} | RRR: {t_payload['rrr']}\n"
                     f"• Parametry: PB {active_pb*100:.2f}% | SL {active_sl*100:.2f}% | TP Režim: {active_tp_mode}\n"
-                    f"• Krabice: {m_mins}M | Body šířka: {m_spr:.2f}% | Střed: {active_box_mid:.0f}$ | Box CVD: {m_cvd:+.1f} | Box Spot (bg): {m_spot:+.1f}\n"
+                    f"• Krabice: {m_mins}M uzavř. | Body šířka: {m_spr:.2f}% | Střed: {active_box_mid:.0f}$ | Box CVD: {m_cvd:+.1f} | Box Spot (bg): {m_spot:+.1f}\n"
                     f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
                     f"• Makro & 1H VP: 1H Trend {trend_1h_str} | 1H VAH {vah_v:.0f}$ / POC {poc_v:.0f}$ / VAL {val_v:.0f}$\n"
                     f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
@@ -2108,7 +2104,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian_v13():
+def start_background_guardian_v14():
     my_token = str(uuid.uuid4())
     sys.__dict__["OKX_GUARDIAN_TOKEN"] = my_token
 
@@ -2140,7 +2136,7 @@ def start_background_guardian_v13():
     t.start()
     return my_token
 
-start_background_guardian_v13()
+start_background_guardian_v14()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -2331,7 +2327,7 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (MACRO ➔ MEDIUM ➔ MICRO | 50% RESET DOTEKŮ | OBOUSTRANNÝ ZÁMEK STŘEDU)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (UZAVŘENÉ 5M SVÍČKY ➔ 1M CVD LL/HH NEBO PRŮRAZ 5M BOX CVD ➔ VOLNÝ PB VSTUP)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
@@ -2389,7 +2385,7 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ TERMINÁL (BEZ EXEKUCE)",
-        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• S1 Top-Down (MACRO ➔ MEDIUM ➔ MICRO) + 50% reset doteků + Oboustranná ochrana středu krabice\n• Zapsané obchody v CSV seznamu: <b>{len(weekly_logs)}</b>\n• Stav AI Agenta: {api_status}\nLive BTC: {b_price:.0f}$",
+        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• S1: Měření výhradně uzavřených 5M svíček + Bod B (1M CVD LL/HH nebo průraz posledního 5M CVD z krabice) + volný PB vstup\n• Zapsané obchody v CSV seznamu: <b>{len(weekly_logs)}</b>\n• Stav AI Agenta: {api_status}\nLive BTC: {b_price:.0f}$",
         force=True
     )
     if ok:
