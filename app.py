@@ -576,7 +576,6 @@ def execute_okx_agent_trade(plan):
         return False, f"⚠️ AI AGENT VÝJIMKA: {str(e)}"
 
 def build_trade_plan(direction, entry_p, upper_liq_p, lower_liq_p, setup_label, sl_pct=DEFAULT_SL_PCT, tp_mode="SPLIT_50_50"):
-    # Všechny skupiny míří finálním TP2 vždy na plný Likvidační magnet, průběžný TP1 upraví Argon 4
     tp_mode = "SPLIT_50_50"
     if direction == "SHORT":
         sl_p = entry_p * (1.0 + sl_pct)
@@ -1286,7 +1285,10 @@ def compute_unified_trend_regime(candles_300, btc_price=0.0):
     except Exception:
         return default_res
 
-# --- SOFTWARE MĚŘENÍ 3: SKUTEČNÉ PRAVÉ SWINGY (STRIKTNĚ 3 SVÍČKY DOLEVA + SWING + 3 SVÍČKY DOPRAVA, NEVYBRANÉ) ---
+# --- SOFTWARE MĚŘENÍ 3: OPRAVDOVÉ SWINGY PODLE UZAVŘENÝCH TĚL (CLOSE BODY) ---
+# Formace: 3 svíčky vlevo zavírající tělem (Close) do vrcholu/dna + 4. svíčka skutečné High/Low +
+# 3 svíčky vpravo zavírající tělem (Close) od vrcholu/dna. Pokud svíčka v řadě zavře opačně,
+# pravidlo se automaticky rozšíří ze 3 na 4 až 5 svíček.
 def _calc_untested_left_swings_raw(candles_300, btc_price):
     res = {"swing_highs": [], "swing_lows": []}
     if not candles_300 or len(candles_300) < 15:
@@ -1294,43 +1296,125 @@ def _calc_untested_left_swings_raw(candles_300, btc_price):
     try:
         c_72_asc = candles_300[1:73][::-1] if len(candles_300) >= 73 else candles_300[1:][::-1]
         n = len(c_72_asc)
-        if n < 9:
+        if n < 11:
             return res
         tz_p = get_prague_now().tzinfo
+        opens = [float(c[1]) for c in c_72_asc]
         highs = [float(c[2]) for c in c_72_asc]
         lows = [float(c[3]) for c in c_72_asc]
+        closes = [float(c[4]) for c in c_72_asc]
         ts_arr = [int(c[0]) for c in c_72_asc]
+
+        def _check_left_body_closes(peak_idx, is_top):
+            # Hledáme 3 postupně vyšší (u Top) nebo nižší (u Bottom) Close těla směrem k vrcholu/dnu.
+            # Pokud některá svíčka v řadě zavře opačně, okno se rozšíří ze 3 na 4 až 5 svíček.
+            end_i = peak_idx if (
+                (is_top and closes[peak_idx] >= closes[peak_idx - 1]) or
+                ((not is_top) and closes[peak_idx] <= closes[peak_idx - 1])
+            ) else (peak_idx - 1)
+
+            for win_len in [3, 4, 5]:
+                start_i = end_i - win_len
+                if start_i < 0:
+                    continue
+                base_c = min(opens[start_i], closes[start_i]) if is_top else max(opens[start_i], closes[start_i])
+                run_ref = closes[start_i]
+                valid_steps = 0
+                spoilers = 0
+                broken_base = False
+
+                for k in range(start_i + 1, end_i + 1):
+                    ck = closes[k]
+                    if is_top:
+                        if ck < base_c:
+                            broken_base = True
+                            break
+                        if ck > run_ref:
+                            valid_steps += 1
+                            run_ref = ck
+                        else:
+                            spoilers += 1
+                    else:
+                        if ck > base_c:
+                            broken_base = True
+                            break
+                        if ck < run_ref:
+                            valid_steps += 1
+                            run_ref = ck
+                        else:
+                            spoilers += 1
+
+                if not broken_base and valid_steps >= 3 and spoilers <= (win_len - 3):
+                    return True
+            return False
+
+        def _check_right_body_closes(peak_idx, is_top):
+            # Hledáme 3 postupně nižší (u Top) nebo vyšší (u Bottom) Close těla napravo od vrcholu/dna.
+            # Pokud svíčka v řadě zavře opačně, okno se rozšíří ze 3 na 4 až 5 svíček.
+            run_ref = max(opens[peak_idx], closes[peak_idx]) if is_top else min(opens[peak_idx], closes[peak_idx])
+            valid_steps = 0
+            spoilers = 0
+
+            for offset in range(1, 6):
+                k = peak_idx + offset
+                if k >= n:
+                    break
+                ck = closes[k]
+                if is_top:
+                    if highs[k] > highs[peak_idx]:
+                        return False
+                    if ck < run_ref:
+                        valid_steps += 1
+                        run_ref = ck
+                    else:
+                        spoilers += 1
+                else:
+                    if lows[k] < lows[peak_idx]:
+                        return False
+                    if ck > run_ref:
+                        valid_steps += 1
+                        run_ref = ck
+                    else:
+                        spoilers += 1
+
+                if spoilers > 2:
+                    return False
+                if valid_steps >= 3:
+                    return True
+            return False
 
         for i in range(3, n - 3):
             cand_h = highs[i]
             cand_l = lows[i]
             t_str = datetime.fromtimestamp(ts_arr[i] / 1000.0, tz_p).strftime("%H:%M")
 
-            # STRIKTNÍ SWING HIGH: 3 svíčky vlevo nižší + swing svíčka + 3 svíčky vpravo nižší (a dosud neproraženo)
-            if cand_h > max(highs[i - 3:i]) and cand_h > max(highs[i + 1:i + 4]):
+            # 1. KONTROLA OPRAVDOVÉHO SWING HIGH (TOP)
+            if cand_h >= max(highs[max(0, i - 3):min(n, i + 4)]):
                 max_after_h = max(highs[i + 1:])
                 min_after_l = min(lows[i + 1:])
                 rev_drop_pct = (cand_h - min_after_l) / max(cand_h, 1.0)
                 if max_after_h <= cand_h and rev_drop_pct >= 0.0012:
-                    if abs(cand_h - btc_price) / max(btc_price, 1.0) <= 0.0220:
-                        res["swing_highs"].append({
-                            "price": round(cand_h, 1),
-                            "time": t_str,
-                            "reversal_pct": round(rev_drop_pct * 100.0, 2)
-                        })
+                    if _check_left_body_closes(i, is_top=True) and _check_right_body_closes(i, is_top=True):
+                        if abs(cand_h - btc_price) / max(btc_price, 1.0) <= 0.0220:
+                            res["swing_highs"].append({
+                                "price": round(cand_h, 1),
+                                "time": t_str,
+                                "reversal_pct": round(rev_drop_pct * 100.0, 2)
+                            })
 
-            # STRIKTNÍ SWING LOW: 3 svíčky vlevo vyšší + swing svíčka + 3 svíčky vpravo vyšší (a dosud neproraženo)
-            if cand_l < min(lows[i - 3:i]) and cand_l < min(lows[i + 1:i + 4]):
+            # 2. KONTROLA OPRAVDOVÉHO SWING LOW (BOTTOM)
+            if cand_l <= min(lows[max(0, i - 3):min(n, i + 4)]):
                 min_after_l2 = min(lows[i + 1:])
                 max_after_h2 = max(highs[i + 1:])
                 rev_bnc_pct = (max_after_h2 - cand_l) / max(cand_l, 1.0)
                 if min_after_l2 >= cand_l and rev_bnc_pct >= 0.0012:
-                    if abs(btc_price - cand_l) / max(btc_price, 1.0) <= 0.0220:
-                        res["swing_lows"].append({
-                            "price": round(cand_l, 1),
-                            "time": t_str,
-                            "reversal_pct": round(rev_bnc_pct * 100.0, 2)
-                        })
+                    if _check_left_body_closes(i, is_top=False) and _check_right_body_closes(i, is_top=False):
+                        if abs(btc_price - cand_l) / max(btc_price, 1.0) <= 0.0220:
+                            res["swing_lows"].append({
+                                "price": round(cand_l, 1),
+                                "time": t_str,
+                                "reversal_pct": round(rev_bnc_pct * 100.0, 2)
+                            })
 
         res["swing_highs"] = sorted(res["swing_highs"], key=lambda x: x["price"])
         res["swing_lows"] = sorted(res["swing_lows"], key=lambda x: x["price"], reverse=True)
@@ -1362,7 +1446,6 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     is_long = (str(direction).upper() == "LONG")
     entry_px = float(t_payload.get("entry", 0.0))
     tab_sl_px = float(t_payload.get("sl_market", 0.0))
-    # Finální TP2 je vždy Likvidační magnet
     liq_tp2_px = float(t_payload.get("tp2_limit_50pct", 0.0))
     default_tp1_px = float(t_payload.get("tp1_limit_50pct", 0.0))
 
@@ -1452,10 +1535,10 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             reasons.append(f"Spot CVD podporuje {direction} ({spot_macro['summary']}).")
 
     # --------------------------------------------------------------------------
-    # ZÁKON 4: KONTROLA STOP-LOSSU PODLE PRAVÝCH SWINGŮ (3L + SWING + 3R)
+    # ZÁKON 4: KONTROLA STOP-LOSSU PODLE PRAVÝCH SWINGŮ (3L+3R CLOSE BODY)
     # --------------------------------------------------------------------------
     rec_sl_px = tab_sl_px
-    swing_note = "Tabulkový SL je čistý (žádný ohrožující 3L+3R swing)."
+    swing_note = "Tabulkový SL je čistý (žádný ohrožující 3L+3R Close-Body swing)."
     buf_pct = 0.0005
 
     if is_long:
@@ -1492,7 +1575,6 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
 
     tp1_candidates = []
     if is_long:
-        # Kandidáti pro LONG TP1 mezi Entry a Likvidačním magnetem: 3H/6H POC, 3H/6H VAH a 3L+3R Swing High
         for lbl, px in [
             ("3H_POC", float(vp3.get("poc", 0.0))),
             ("6H_POC", float(vp6.get("poc", 0.0))),
@@ -1507,7 +1589,6 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
                 tp1_candidates.append({"label": f"SWING_H({sw['time']})", "price": round(px - 5.0, 0), "kind": "SWING"})
         tp1_candidates = sorted(tp1_candidates, key=lambda x: x["price"])
     else:
-        # Kandidáti pro SHORT TP1 mezi Entry a Likvidačním magnetem: 3H/6H POC, 3H/6H VAL a 3L+3R Swing Low
         for lbl, px in [
             ("3H_POC", float(vp3.get("poc", 0.0))),
             ("6H_POC", float(vp6.get("poc", 0.0))),
@@ -1523,12 +1604,10 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
         tp1_candidates = sorted(tp1_candidates, key=lambda x: x["price"], reverse=True)
 
     if tp1_candidates:
-        # Pokud jsme v silném trendu ve směru obchodu a otevřeli jsme na VAL/VAH, preferujeme vzdálenější VAH/VAL nebo vyšší Swing
         if (is_long and regime == "STRONG_BULL") or ((not is_long) and regime == "STRONG_BEAR"):
             opposite_edge = [c for c in tp1_candidates if c["kind"] in ["VAH", "VAL", "SWING"]]
             chosen_tp1 = opposite_edge[-1] if opposite_edge else tp1_candidates[-1]
         else:
-            # V běžném režimu / CHOPu bereme první logický POC / VAH / VAL / Swing pro jistý 50% profit a posun na BE
             chosen_tp1 = tp1_candidates[0]
         rec_tp1_px = chosen_tp1["price"]
         tp1_reason_lbl = f"Průběžný TP1 (50% + Auto-BE) umístěn na {chosen_tp1['label']} ({rec_tp1_px:.0f}$)"
@@ -1558,11 +1637,11 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
                 "spot_3h_6h": spot_macro["summary"],
                 "vp_3h": vp3,
                 "vp_6h": vp6,
-                "untested_3L3R_swings": left_swings
+                "untested_3L3R_close_body_swings": left_swings
             }
             sys_prompt = (
                 "Jsi Argon 4 AI Boss s plnou pravomocí nad exekucí na OKX. "
-                "Zkontroluj obchod a kandidáty na průběžný TP1 (POC, VAH/VAL, 3L+3R Swing), přičemž finální TP2 je vždy na Likvidačním magnetu. "
+                "Zkontroluj obchod a kandidáty na průběžný TP1 (POC, VAH/VAL, 3L+3R Close-Body Swing), přičemž finální TP2 je vždy na Likvidačním magnetu. "
                 "Odpověz stručně v češtině (max 2 věty), proč obchod schvaluješ nebo zamítáš a jaký průběžný TP1 volíš."
             )
             for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
