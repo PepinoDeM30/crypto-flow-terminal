@@ -1069,83 +1069,8 @@ def get_1m_real_or_calibrated_delta(candles_1m, candle_open_ts, is_spot=False):
         return real_collected
     return sum_1m
 
-def compute_1h_trend_info(candles_1h, btc_price):
-    try:
-        if not candles_1h or len(candles_1h) < 12:
-            return "NEUTRAL (0.00%)"
-        c_72_asc = candles_1h[:72][::-1] if len(candles_1h) >= 72 else candles_1h[::-1]
-        closes = [float(c[4]) for c in c_72_asc]
-        ema_fast = sum(closes[-12:]) / min(len(closes), 12)
-        ema_med = sum(closes[-24:]) / min(len(closes), 24)
-        ema_slow = sum(closes) / len(closes)
-        diff_72h_pct = ((btc_price - closes[0]) / closes[0]) * 100.0 if closes[0] > 0 else 0.0
-        if btc_price > ema_fast > ema_med > ema_slow:
-            return f"STRONG_BULL_72H ({diff_72h_pct:+.2f}%)"
-        elif btc_price < ema_fast < ema_med < ema_slow:
-            return f"STRONG_BEAR_72H ({diff_72h_pct:+.2f}%)"
-        elif btc_price > ema_med:
-            return f"MILD_BULL_72H ({diff_72h_pct:+.2f}%)"
-        elif btc_price < ema_med:
-            return f"MILD_BEAR_72H ({diff_72h_pct:+.2f}%)"
-        return f"RANGING_72H ({diff_72h_pct:+.2f}%)"
-    except Exception:
-        return "NEUTRAL"
-
-def compute_weekly_volume_profile(candles_1h):
-    try:
-        if not candles_1h:
-            return 0.0, 0.0, 0.0
-        source_c = candles_1h[:168]
-        lows = [float(c[3]) for c in source_c]
-        highs = [float(c[2]) for c in source_c]
-        min_p, max_p = min(lows), max(highs)
-        if max_p <= min_p:
-            return min_p, max_p, min_p
-
-        num_bins = 36
-        bin_size = (max_p - min_p) / num_bins
-        bins = [0.0] * num_bins
-        bin_centers = [min_p + (i + 0.5) * bin_size for i in range(num_bins)]
-
-        for c in source_c:
-            h, l = float(c[2]), float(c[3])
-            vol = float(c[6]) if len(c) > 6 and float(c[6]) > 0 else float(c[5])
-            if vol <= 0:
-                vol = 1.0
-            s_b = max(0, min(num_bins - 1, int((l - min_p) / bin_size)))
-            e_b = max(0, min(num_bins - 1, int((h - min_p) / bin_size)))
-            span = (e_b - s_b) + 1
-            for b_idx in range(s_b, e_b + 1):
-                bins[b_idx] += (vol / span)
-
-        total_vol = sum(bins)
-        if total_vol <= 0:
-            return bin_centers[num_bins // 2], max_p, min_p
-
-        poc_idx = max(range(num_bins), key=lambda i: bins[i])
-        poc_p = bin_centers[poc_idx]
-        target_vol = total_vol * 0.70
-        curr_vol = bins[poc_idx]
-        low_i, high_i = poc_idx, poc_idx
-
-        while curr_vol < target_vol and (low_i > 0 or high_i < num_bins - 1):
-            up_v = bins[high_i + 1] if high_i < num_bins - 1 else -1.0
-            dn_v = bins[low_i - 1] if low_i > 0 else -1.0
-            if up_v >= dn_v:
-                high_i += 1
-                curr_vol += bins[high_i]
-            else:
-                low_i -= 1
-                curr_vol += bins[low_i]
-
-        w_vah = bin_centers[high_i] + (bin_size * 0.5)
-        w_val = bin_centers[low_i] - (bin_size * 0.5)
-        return poc_p, w_vah, w_val
-    except Exception:
-        return 0.0, 0.0, 0.0
-
 # ==============================================================================
-# NEVIDITELNÝ MOZEK ARGON 4 AI AGENTA NA POZADÍ (5 KAPITOL + GOOGLE AI STUDIO)
+# NEVIDITELNÝ MOZEK ARGON 4 AI AGENTA NA POZADÍ (POUZE 3H & 6H VP + PRAVDIVÝ TREND)
 # ==============================================================================
 def _calc_vp_from_raw_candles(candle_list, num_bins=36):
     if not candle_list or len(candle_list) < 3:
@@ -1202,17 +1127,16 @@ def _calc_vp_from_raw_candles(candle_list, num_bins=36):
     except Exception:
         return {"vah": 0.0, "poc": 0.0, "val": 0.0}
 
-def _calc_mtf_vp_and_confluences(candles_1m_fut, candles_300):
-    c_1h_src = candles_1m_fut[:60] if (candles_1m_fut and len(candles_1m_fut) >= 30) else (candles_300[1:13] if len(candles_300) >= 13 else candles_300)
+# --- KAPITOLA 1: VÝHRADNĚ 3H A 6H VOLUME PROFILE A JEJICH KONFLUENCE (BEZ 1H A BEZ WEEKLY VP) ---
+def _calc_mtf_vp_and_confluences(candles_300):
     c_3h_src = candles_300[1:37] if len(candles_300) >= 37 else candles_300[1:]
     c_6h_src = candles_300[1:73] if len(candles_300) >= 73 else candles_300[1:]
 
-    vp_1h = _calc_vp_from_raw_candles(c_1h_src, num_bins=24)
     vp_3h = _calc_vp_from_raw_candles(c_3h_src, num_bins=36)
     vp_6h = _calc_vp_from_raw_candles(c_6h_src, num_bins=48)
 
     all_levels = []
-    for tf_name, vp_d in [("1H", vp_1h), ("3H", vp_3h), ("6H", vp_6h)]:
+    for tf_name, vp_d in [("3H", vp_3h), ("6H", vp_6h)]:
         for k_type in ["VAH", "POC", "VAL"]:
             px = float(vp_d.get(k_type.lower(), 0.0) or 0.0)
             if px > 0:
@@ -1228,7 +1152,7 @@ def _calc_mtf_vp_and_confluences(candles_1m_fut, candles_300):
         cluster = [base]
         for j in range(i + 1, len(all_sorted)):
             cand = all_sorted[j]
-            if abs(cand["price"] - base["price"]) / max(base["price"], 1.0) <= 0.0010:
+            if abs(cand["price"] - base["price"]) / max(base["price"], 1.0) <= 0.0012:
                 cluster.append(cand)
                 used.add(j)
             else:
@@ -1246,53 +1170,121 @@ def _calc_mtf_vp_and_confluences(candles_1m_fut, candles_300):
                 "labels": "+".join(x["label"] for x in cluster)
             })
 
-    return {"1h": vp_1h, "3h": vp_3h, "6h": vp_6h, "all_levels": all_sorted, "confluences": confluences}
+    return {"3h": vp_3h, "6h": vp_6h, "all_levels": all_sorted, "confluences": confluences}
 
-def _calc_3h_trend_chop_raw(candles_300):
+# --- KAPITOLA 2: SJEDNOCENÝ A PRAVDIVÝ VÝPOČET TRENDU (3H + 6H SWING STRUKTURA + 1H IMPULS) ---
+def compute_unified_trend_regime(candles_300, btc_price=0.0):
     default_res = {
         "regime": "CHOP",
         "efficiency_pct": 0.0,
         "net_move_usd": 0.0,
         "net_move_pct": 0.0,
         "total_path_usd": 0.0,
-        "summary_txt": "CHOP (Efektivita 0.0%)"
+        "summary_txt": "CHOP (Načítám strukturu...)"
     }
     if not candles_300 or len(candles_300) < 15:
         return default_res
     try:
-        c_36_asc = candles_300[1:37][::-1] if len(candles_300) >= 37 else candles_300[1:][::-1]
-        if len(c_36_asc) < 6:
-            return default_res
-        start_px = float(c_36_asc[0][1])
-        end_px = float(c_36_asc[-1][4])
-        net_diff = end_px - start_px
-        net_move_usd = abs(net_diff)
-        net_move_pct = (net_move_usd / max(start_px, 1.0)) * 100.0
+        c_72_asc = candles_300[1:73][::-1] if len(candles_300) >= 73 else candles_300[1:][::-1]
+        c_36_asc = c_72_asc[-36:] if len(c_72_asc) >= 36 else c_72_asc
+        c_12_asc = c_36_asc[-12:] if len(c_36_asc) >= 12 else c_36_asc
 
-        total_path_usd = 0.0
-        prev_c = start_px
-        for c in c_36_asc:
-            h_v, l_v, cl_v = float(c[2]), float(c[3]), float(c[4])
-            total_path_usd += max(h_v - l_v, abs(cl_v - prev_c))
-            prev_c = cl_v
+        curr_p = float(btc_price) if btc_price > 0 else float(c_36_asc[-1][4])
 
-        eff_pct = (net_move_usd / max(total_path_usd, 1.0)) * 100.0
-        dir_s = "BULL" if net_diff >= 0 else "BEAR"
+        # 1. Měření 3H struktury (36 uzavřených 5M svíček): jak změna Open->Close, tak celý 3H Swing Low->High
+        h_3h = [float(c[2]) for c in c_36_asc]
+        l_3h = [float(c[3]) for c in c_36_asc]
+        c_3h = [float(c[4]) for c in c_36_asc]
 
-        if eff_pct < 22.0 or net_move_pct < 0.35:
-            regime = "CHOP"
-        elif eff_pct > 40.0 and net_move_pct > 0.75:
-            regime = f"STRONG_{dir_s}"
+        max_3h, min_3h = max(h_3h), min(l_3h)
+        idx_max_3h = h_3h.index(max_3h)
+        idx_min_3h = l_3h.index(min_3h)
+        swing_3h_usd = max_3h - min_3h
+        swing_3h_pct = (swing_3h_usd / max(min_3h, 1.0)) * 100.0
+        # Pokud minimum přišlo před maximem, hlavní 3H swing šel NAHORU (+1), jinak DOLŮ (-1)
+        swing_3h_dir = 1 if idx_max_3h >= idx_min_3h else -1
+
+        net_3h_diff = curr_p - float(c_36_asc[0][1])
+        # Skutečný směrový posun v 3H okně (vezme silnější z čisté změny a hlavního swingu potvrzeného cenou)
+        pos_in_3h = (curr_p - min_3h) / max(swing_3h_usd, 1.0)
+        if swing_3h_dir > 0 and pos_in_3h >= 0.65:
+            eff_move_3h_usd = max(abs(net_3h_diff), curr_p - min_3h)
+            dir_3h = "BULL"
+        elif swing_3h_dir < 0 and pos_in_3h <= 0.35:
+            eff_move_3h_usd = max(abs(net_3h_diff), max_3h - curr_p)
+            dir_3h = "BEAR"
         else:
-            regime = f"MILD_{dir_s}"
+            eff_move_3h_usd = abs(net_3h_diff)
+            dir_3h = "BULL" if net_3h_diff >= 0 else "BEAR"
 
+        eff_move_3h_pct = (eff_move_3h_usd / max(curr_p, 1.0)) * 100.0
+
+        total_path_3h = 0.0
+        prev_c = float(c_36_asc[0][1])
+        for c in c_36_asc:
+            hv, lv, clv = float(c[2]), float(c[3]), float(c[4])
+            total_path_3h += max(hv - lv, abs(clv - prev_c))
+            prev_c = clv
+        eff_3h_pct = (eff_move_3h_usd / max(total_path_3h, 1.0)) * 100.0
+
+        # 2. Měření 6H kontextu (72 uzavřených 5M svíček) a průměrů EMA
+        h_6h = [float(c[2]) for c in c_72_asc]
+        l_6h = [float(c[3]) for c in c_72_asc]
+        c_6h = [float(c[4]) for c in c_72_asc]
+        max_6h, min_6h = max(h_6h), min(l_6h)
+        swing_6h_usd = max_6h - min_6h
+        swing_6h_pct = (swing_6h_usd / max(min_6h, 1.0)) * 100.0
+        pos_in_6h = (curr_p - min_6h) / max(swing_6h_usd, 1.0)
+        net_6h_diff = curr_p - float(c_72_asc[0][1])
+        net_6h_pct = (abs(net_6h_diff) / max(float(c_72_asc[0][1]), 1.0)) * 100.0
+
+        ema_1h = sum(c_12_asc_cl := [float(c[4]) for c in c_12_asc]) / max(len(c_12_asc), 1)
+        ema_3h = sum(c_3h) / max(len(c_3h), 1)
+        ema_6h = sum(c_6h) / max(len(c_6h), 1)
+
+        # 3. Měření 1H impulsu (posledních 12 svíček)
+        diff_1h = curr_p - float(c_12_asc[0][1])
+        move_1h_pct = (abs(diff_1h) / max(curr_p, 1.0)) * 100.0
+        dir_1h = "BULL" if diff_1h >= 0 else "BEAR"
+
+        # ROZHODOVACÍ MATICE (odolná proti falešnému CHOPu na vrcholu/dně trendu):
+        regime = "CHOP"
+
+        # Pravidlo A: Silný 1H impuls (>= 0.85 %)
+        if move_1h_pct >= 0.85:
+            regime = f"STRONG_{dir_1h}" if move_1h_pct >= 1.25 else f"MILD_{dir_1h}"
+        # Pravidlo B: Výrazný 3H pohyb nebo 3H swing (>= 1.15 %) držený u vrcholu/dna
+        elif eff_move_3h_pct >= 1.15:
+            if eff_move_3h_pct >= 1.75 or eff_3h_pct >= 18.0:
+                regime = f"STRONG_{dir_3h}"
+            else:
+                regime = f"MILD_{dir_3h}"
+        # Pravidlo C: Držení vysokého 6H trendu (např. po +1700$ rally cena konsoliduje nahoře nad 3H a 6H průměrem)
+        elif swing_6h_pct >= 1.50 and pos_in_6h >= 0.68 and curr_p >= ema_3h and ema_3h >= ema_6h:
+            regime = "STRONG_BULL" if (swing_6h_pct >= 2.20 and pos_in_6h >= 0.78) else "MILD_BULL"
+            eff_move_3h_usd = max(eff_move_3h_usd, curr_p - min_6h)
+            eff_move_3h_pct = (eff_move_3h_usd / max(min_6h, 1.0)) * 100.0
+        elif swing_6h_pct >= 1.50 and pos_in_6h <= 0.32 and curr_p <= ema_3h and ema_3h <= ema_6h:
+            regime = "STRONG_BEAR" if (swing_6h_pct >= 2.20 and pos_in_6h <= 0.22) else "MILD_BEAR"
+            eff_move_3h_usd = max(eff_move_3h_usd, max_6h - curr_p)
+            eff_move_3h_pct = (eff_move_3h_usd / max(curr_p, 1.0)) * 100.0
+        # Pravidlo D: Střední 3H trend (>= 0.65 % a cena respektuje průměry)
+        elif eff_move_3h_pct >= 0.65 and ((dir_3h == "BULL" and curr_p >= ema_3h) or (dir_3h == "BEAR" and curr_p <= ema_3h)):
+            regime = f"MILD_{dir_3h}"
+        else:
+            regime = "CHOP"
+
+        summary_txt = (
+            f"{regime} (Swing {eff_move_3h_usd:.0f}$ [{eff_move_3h_pct:.2f}%] | "
+            f"Pozice v 6H pásmu: {pos_in_6h*100:.0f}% | 1H Impuls: {diff_1h:+.0f}$ [{move_1h_pct:.2f}%])"
+        )
         return {
             "regime": regime,
-            "efficiency_pct": round(eff_pct, 1),
-            "net_move_usd": round(net_move_usd, 0),
-            "net_move_pct": round(net_move_pct, 2),
-            "total_path_usd": round(total_path_usd, 0),
-            "summary_txt": f"{regime} (Přímka {net_move_usd:.0f}$ [{net_move_pct:.2f}%] / Klikatice {total_path_usd:.0f}$ = Efektivita {eff_pct:.1f}%)"
+            "efficiency_pct": round(eff_3h_pct, 1),
+            "net_move_usd": round(eff_move_3h_usd, 0),
+            "net_move_pct": round(eff_move_3h_pct, 2),
+            "total_path_usd": round(total_path_3h, 0),
+            "summary_txt": summary_txt
         }
     except Exception:
         return default_res
@@ -1346,19 +1338,19 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     tab_tp2_px = float(t_payload.get("tp2_limit_50pct", 0.0))
     tab_tp_mode = str(t_payload.get("tp_mode", "SPLIT_50_50"))
 
-    mtf_vp = _calc_mtf_vp_and_confluences(candles_1m_fut, candles_300)
-    trend_3h = _calc_3h_trend_chop_raw(candles_300)
+    mtf_vp = _calc_mtf_vp_and_confluences(candles_300)
+    trend_info = compute_unified_trend_regime(candles_300, entry_px)
     left_swings = _calc_untested_left_swings_raw(candles_300, entry_px)
 
     score = 80
     reasons = []
     warnings = []
 
-    regime = trend_3h.get("regime", "CHOP")
+    regime = trend_info.get("regime", "CHOP")
     confluences = mtf_vp.get("confluences", [])
     all_vp_levels = mtf_vp.get("all_levels", [])
 
-    # Kapitola 1 & 2: Vstup na VP hladině + 3H Trend vs Chop
+    # Kapitola 1 & 2: Vstup na 3H/6H VP hladině + Trend vs Chop
     entry_on_vp = False
     entry_vp_names = []
     for cf in confluences:
@@ -1373,18 +1365,18 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
 
     if entry_on_vp:
         score += 8
-        reasons.append(f"Vstup leží na VP hladině ({', '.join(entry_vp_names[:2])}) -> OBA SMĚRY POVOLENY.")
+        reasons.append(f"Vstup leží na 3H/6H VP hladině ({', '.join(entry_vp_names[:2])}) -> OBA SMĚRY POVOLENY.")
 
     if (is_long and regime == "STRONG_BEAR") or (not is_long and regime == "STRONG_BULL"):
         if group_id == "MICRO" and not entry_on_vp and setup_type == "SETUP_1":
             score -= 30
-            warnings.append(f"⛔ MICRO {direction} přímo proti rozjetému {regime} bez opory VP.")
+            warnings.append(f"⛔ MICRO {direction} přímo proti rozjetému {regime} bez opory 3H/6H VP.")
         else:
             score -= 12
             warnings.append(f"⚠️ Obchod {direction} jde proti {regime} -> nutný opatrný TP.")
     elif (is_long and "BULL" in regime) or (not is_long and "BEAR" in regime):
         score += 6
-        reasons.append(f"Směr {direction} v souladu s 3H režimem {regime}.")
+        reasons.append(f"Směr {direction} v souladu s režimem {regime}.")
 
     # Kapitola 3: Kontrola SL podle nevybraných levých swingů (+0.05 % polštář)
     rec_sl_px = tab_sl_px
@@ -1415,7 +1407,7 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
         score -= 20
         warnings.append(f"⚠️ Bezpečný SL za levým swingem je příliš daleko ({sl_dist_pct*100:.2f}%).")
 
-    # Kapitola 4: Překážky v cestě k TP a reálné RRR
+    # Kapitola 4: Překážky z 3H+6H konfluencí v cestě k TP a reálné RRR
     rec_tp1_px = tab_tp1_px
     rec_tp2_px = tab_tp2_px
     rec_tp_mode = tab_tp_mode
@@ -1442,10 +1434,10 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             if (is_long and rec_tp1_px > rec_tp2_px) or (not is_long and rec_tp1_px < rec_tp2_px):
                 rec_tp1_px = rec_tp2_px
                 rec_tp_mode = "HALF_LIQ"
-            tp_note = f"V {regime} stojí v cestě konfluence {f_obs['labels']} ({f_obs['mid']:.0f}$) -> TP zkrácen před zeď na {rec_tp2_px:.0f}$."
-            warnings.append(f"🧱 Konfluence VP ({f_obs['labels']}) v cestě -> doporučen TP @ {rec_tp2_px:.0f}$.")
+            tp_note = f"V {regime} stojí v cestě 3H+6H konfluence {f_obs['labels']} ({f_obs['mid']:.0f}$) -> TP zkrácen před zeď na {rec_tp2_px:.0f}$."
+            warnings.append(f"🧱 Konfluence 3H+6H VP ({f_obs['labels']}) v cestě -> doporučen TP @ {rec_tp2_px:.0f}$.")
         else:
-            tp_note = f"Jdeme s trendem ({regime}), menší VP překážku ({f_obs['labels']}) ignorujeme."
+            tp_note = f"Jdeme s trendem ({regime}), 3H+6H VP překážku ({f_obs['labels']}) prorážíme."
 
     if (regime == "CHOP" or is_counter) and rec_tp_mode == "FULL_LIQ":
         rec_tp_mode = "SPLIT_50_50"
@@ -1500,9 +1492,10 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
                 "recommended_tp1_tp2": [round(rec_tp1_px, 1), round(rec_tp2_px, 1)],
                 "recommended_tp_mode": rec_tp_mode,
                 "real_rrr": real_rrr,
-                "trend_3h": trend_3h.get("summary_txt", ""),
-                "vp_1h_3h_6h": mtf_vp.get("1h"),
-                "vp_confluences": [c["labels"] + f"@{c['mid']:.0f}$" for c in confluences[:4]],
+                "trend_3h_6h": trend_info.get("summary_txt", ""),
+                "vp_3h": mtf_vp.get("3h"),
+                "vp_6h": mtf_vp.get("6h"),
+                "vp_confluences_3h_6h": [c["labels"] + f"@{c['mid']:.0f}$" for c in confluences[:4]],
                 "untested_left_swings": left_swings,
                 "spot_25m": round(scvd5, 1),
                 "oi_25m": round(oi5, 1),
@@ -1511,7 +1504,7 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             }
             sys_prompt = (
                 "Jsi Argon 4 AI Pit Boss pro intradenní scalping BTC na OKX. "
-                "Dostáváš spočítaná čísla z 5 kapitol (1H/3H/6H VP konfluence, 3H Trend vs Chop [Přímka vs Klikatice], "
+                "Dostáváš spočítaná čísla z 5 kapitol (3H a 6H VP konfluence, 3H/6H Trend vs Chop, "
                 "nevybrané levé swingy s +0.05% polštářem pro SL, Likvidační magnety + překážky pro TP, reálné RRR a Spot/OI). "
                 "Napiš stručný, jasný verdikt v češtině (max 2 krátké věty): posuď hraniční situace a potvrď doporučený SL, TP a režim exitu."
             )
@@ -1541,15 +1534,15 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             ai_comment = "Setup splňuje parametry všech 5 kapitol Argon 4."
 
     v_icon = "🟢" if verdict == "SCHVÁLENO" else "🔴"
-    conf_str = ", ".join(f"{c['labels']}@{c['mid']:.0f}$" for c in confluences[:3]) or "Žádná v okolí"
+    conf_str = ", ".join(f"{c['labels']}@{c['mid']:.0f}$" for c in confluences[:3]) or "Žádná 3H+6H konfluence v okolí"
     vp3 = mtf_vp["3h"]
     vp6 = mtf_vp["6h"]
 
     telegram_block = (
         f"\n🧠 <b>ARGON 4 AI POSUDEK (Stínový poradce do 20. 11.):</b>\n"
         f"• Verdikt: {v_icon} <b>{verdict}</b> (Skóre: <b>{score}/100</b> | Reálné RRR: <b>{real_rrr:.2f}</b>)\n"
-        f"• Kap. 1 (3H/6H VP & Konfluence): 3H POC <b>{vp3['poc']:.0f}$</b> | 6H POC <b>{vp6['poc']:.0f}$</b> | Konfl: <b>{conf_str}</b>\n"
-        f"• Kap. 2 (3H Trend/Chop): <b>{trend_3h.get('summary_txt', '-')}</b>\n"
+        f"• Kap. 1 (3H & 6H VP + Konfluence): 3H POC <b>{vp3['poc']:.0f}$</b> | 6H POC <b>{vp6['poc']:.0f}$</b> | Konfl: <b>{conf_str}</b>\n"
+        f"• Kap. 2 (Trend/Chop 3H+6H): <b>{trend_info.get('summary_txt', '-')}</b>\n"
         f"• Kap. 3 (Posudek SL – Levé swingy): <b>{rec_sl_px:.0f}$</b> ({swing_note})\n"
         f"• Kap. 4 (Posudek TP & Překážky): <b>TP1 {rec_tp1_px:.0f}$ / TP2 {rec_tp2_px:.0f}$ [{rec_tp_mode}]</b> ({tp_note})\n"
         f"• Komentář AI: <i>{ai_comment}</i>"
@@ -1563,7 +1556,9 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
         "rec_tp1_px": int(round(rec_tp1_px)),
         "rec_tp2_px": int(round(rec_tp2_px)),
         "rec_tp_mode": rec_tp_mode,
-        "trend_3h": trend_3h.get("summary_txt", ""),
+        "trend_3h": trend_info.get("summary_txt", ""),
+        "vp_3h": vp3,
+        "vp_6h": vp6,
         "vp_confluences": conf_str,
         "ai_comment": ai_comment,
         "telegram_block": telegram_block
@@ -2250,13 +2245,10 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     agent_msg = str(res_agent)
                     exec_ok = ("ZADAL" in agent_msg or "Dry-Run" in agent_msg or "Exekuce vypnuta" in agent_msg)
 
-                poc_v, vah_v, val_v = vp_data
-                w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                 cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
-                trend_1h_str = compute_1h_trend_info(candles_1h, btc_price)
                 now_str = get_prague_now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Neviditelný výpočet Argon 4 AI Agenta na pozadí (pouze pro Telegram a CSV)
+                # Neviditelný výpočet Argon 4 AI Agenta na pozadí (pouze 3H & 6H VP + sjednocený Trend)
                 ai_eval = evaluate_argon4_background(
                     setup_type="SETUP_1",
                     group_id=active_group,
@@ -2267,6 +2259,9 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     flow_metrics=flow_metrics,
                     box_spot=m_spot
                 )
+                vp3 = ai_eval["vp_3h"]
+                vp6 = ai_eval["vp_6h"]
+                trend_unified_str = ai_eval["trend_3h"]
 
                 log_block = (
                     f"\n📊 <b>DATA PRO TÝDENNÍ ANALÝZU & ARGON 4 AI:</b>\n"
@@ -2274,8 +2269,9 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                     f"• Parametry: PB {active_pb*100:.2f}% | SL {active_sl*100:.2f}% | TP Režim: {active_tp_mode}\n"
                     f"• Krabice: {m_mins}M uzavř. | Body šířka: {m_spr:.2f}% | Střed: {active_box_mid:.0f}$ | Box CVD: {m_cvd:+.1f} | Box Spot (bg): {m_spot:+.1f}\n"
                     f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
-                    f"• Makro & 1H VP: 1H Trend {trend_1h_str} | 1H VAH {vah_v:.0f}$ / POC {poc_v:.0f}$ / VAL {val_v:.0f}$\n"
-                    f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
+                    f"• Trend (3H/6H): {trend_unified_str}\n"
+                    f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
+                    f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
                 )
                 msg += f"\n{agent_msg}{log_block}"
                 tg_msg = msg + ai_eval["telegram_block"]
@@ -2300,12 +2296,13 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                         "box_mid": round(active_box_mid, 1),
                         "box_cvd": m_cvd,
                         "box_spot_bg": m_spot,
-                        "trend_1h_72h": trend_1h_str,
+                        "trend_3h_6h": trend_unified_str,
                         "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
                         "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
                         "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                        "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
-                        "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
+                        "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
+                        "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
+                        "vp_confluences_3h_6h": ai_eval["vp_confluences"],
                         "agent_status": agent_msg,
                         "ai_verdict": ai_eval["verdict"],
                         "ai_score": ai_eval["score"],
@@ -2328,90 +2325,6 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
     except Exception:
         return "Načítám data Setupu 1...", False
 # === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
-
-# --- UPRAVENÁ KAPITOLA 2 PRO ARGON 4 AI (POUZE PRO TEXTOVÝ POSUDEK NA TELEGRAMU) ---
-def _calc_3h_trend_chop_raw(candles_300):
-    default_res = {
-        "regime": "CHOP",
-        "efficiency_pct": 0.0,
-        "net_move_usd": 0.0,
-        "net_move_pct": 0.0,
-        "total_path_usd": 0.0,
-        "summary_txt": "CHOP (Efektivita 0.0%)"
-    }
-    if not candles_300 or len(candles_300) < 15:
-        return default_res
-    try:
-        c_36_asc = candles_300[1:37][::-1] if len(candles_300) >= 37 else candles_300[1:][::-1]
-        if len(c_36_asc) < 6:
-            return default_res
-
-        # 1. Měření 3H okna (36 uzavřených 5M svíček)
-        start_px = float(c_36_asc[0][1])
-        end_px = float(c_36_asc[-1][4])
-        net_diff_3h = end_px - start_px
-        net_move_usd = abs(net_diff_3h)
-        net_move_pct = (net_move_usd / max(start_px, 1.0)) * 100.0
-
-        total_path_usd = 0.0
-        prev_c = start_px
-        for c in c_36_asc:
-            h_v, l_v, cl_v = float(c[2]), float(c[3]), float(c[4])
-            total_path_usd += max(h_v - l_v, abs(cl_v - prev_c))
-            prev_c = cl_v
-
-        eff_3h_pct = (net_move_usd / max(total_path_usd, 1.0)) * 100.0
-        dir_3h = "BULL" if net_diff_3h >= 0 else "BEAR"
-
-        # 2. Měření posledního 1H impulsu (posledních 12 uzavřených 5M svíček)
-        c_12_sub = c_36_asc[-12:] if len(c_36_asc) >= 12 else c_36_asc
-        s1h_px = float(c_12_sub[0][1])
-        e1h_px = float(c_12_sub[-1][4])
-        diff_1h = e1h_px - s1h_px
-        move_1h_usd = abs(diff_1h)
-        move_1h_pct = (move_1h_usd / max(s1h_px, 1.0)) * 100.0
-
-        path_1h_usd = 0.0
-        p1h = s1h_px
-        for c in c_12_sub:
-            h_v, l_v, cl_v = float(c[2]), float(c[3]), float(c[4])
-            path_1h_usd += max(h_v - l_v, abs(cl_v - p1h))
-            p1h = cl_v
-
-        eff_1h_pct = (move_1h_usd / max(path_1h_usd, 1.0)) * 100.0
-        dir_1h = "BULL" if diff_1h >= 0 else "BEAR"
-
-        if move_1h_pct >= 0.85 and eff_1h_pct >= 16.0:
-            if move_1h_pct >= 1.25 or eff_1h_pct >= 24.0 or (dir_1h == dir_3h and net_move_pct >= 1.40):
-                regime = f"STRONG_{dir_1h}"
-            else:
-                regime = f"MILD_{dir_1h}"
-        elif net_move_pct >= 1.50:
-            if net_move_pct >= 2.00 or eff_3h_pct >= 15.0:
-                regime = f"STRONG_{dir_3h}"
-            else:
-                regime = f"MILD_{dir_3h}"
-        elif net_move_pct >= 0.70 and eff_3h_pct >= 14.0:
-            if eff_3h_pct >= 28.0 and net_move_pct >= 1.10:
-                regime = f"STRONG_{dir_3h}"
-            else:
-                regime = f"MILD_{dir_3h}"
-        else:
-            regime = "CHOP"
-
-        return {
-            "regime": regime,
-            "efficiency_pct": round(eff_3h_pct, 1),
-            "net_move_usd": round(net_move_usd, 0),
-            "net_move_pct": round(net_move_pct, 2),
-            "total_path_usd": round(total_path_usd, 0),
-            "summary_txt": (
-                f"{regime} (3H Přímka {net_move_usd:.0f}$ [{net_move_pct:.2f}%] / Klikatice {total_path_usd:.0f}$ = Ef. {eff_3h_pct:.1f}% | "
-                f"1H Impuls: {diff_1h:+.0f}$ [{move_1h_pct:.2f}%], Ef. {eff_1h_pct:.1f}%)"
-            )
-        }
-    except Exception:
-        return default_res
 
 # --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> OTOČKA NEBO KNOTY NA UZAVŘENÝCH 5M SVÍČKÁCH (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC MEZI 2 SVÍČKAMI DO 9 SVÍČEK (BOD D) -> HNED MAKER VSTUP (BOD E) ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p, vp_data, flow_metrics, candles_1m_fut=None):
@@ -2689,10 +2602,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                 agent_msg = str(res_agent)
                                 exec_ok = ("ZADAL" in agent_msg or "Dry-Run" in agent_msg or "Exekuce vypnuta" in agent_msg)
 
-                            poc_v, vah_v, val_v = vp_data
-                            w_poc, w_vah, w_val = compute_weekly_volume_profile(candles_1h)
                             cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
-                            trend_1h_str = compute_1h_trend_info(candles_1h, btc_price)
                             now_str = get_prague_now().strftime("%Y-%m-%d %H:%M:%S")
 
                             ai_eval_s2 = evaluate_argon4_background(
@@ -2705,6 +2615,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                 flow_metrics=flow_metrics,
                                 box_spot=scvd1
                             )
+                            vp3 = ai_eval_s2["vp_3h"]
+                            vp6 = ai_eval_s2["vp_6h"]
+                            trend_unified_str = ai_eval_s2["trend_3h"]
 
                             log_block = (
                                 f"\n📊 <b>DATA PRO TÝDENNÍ ANALÝZU & ARGON 4 AI:</b>\n"
@@ -2712,8 +2625,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                 f"• Bod C (OI): {oi_cond_label} [1.sv: {oi_1_val:+.1f} / 2.sv: {oi_2_val:+.1f} BTC]\n"
                                 f"• Bod D (CVD 2 svíček): Rozdíl {cvd_anomaly_diff:.1f} BTC [Extrém sv.: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f} BTC]\n"
                                 f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
-                                f"• Makro & 1H VP: 1H Trend {trend_1h_str} | 1H VAH {vah_v:.0f}$ / POC {poc_v:.0f}$ / VAL {val_v:.0f}$\n"
-                                f"• Weekly VP (7D): W_VAH {w_vah:.0f}$ | W_POC {w_poc:.0f}$ | W_VAL {w_val:.0f}$"
+                                f"• Trend (3H/6H): {trend_unified_str}\n"
+                                f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
+                                f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
                             )
                             triggered_msg += f"\n{agent_msg}{log_block}"
                             tg_msg_s2 = triggered_msg + ai_eval_s2["telegram_block"]
@@ -2739,12 +2653,13 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                     "ref_candle_cvd": round(ref_cvd, 1),
                                     "trigger_candle_cvd": round(test_cvd, 1),
                                     "sfp_cvd_diff": round(cvd_anomaly_diff, 1),
-                                    "trend_1h_72h": trend_1h_str,
+                                    "trend_3h_6h": trend_unified_str,
                                     "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
                                     "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
                                     "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                                    "vp_1h_vah_poc_val": [round(vah_v, 0), round(poc_v, 0), round(val_v, 0)],
-                                    "vp_weekly_vah_poc_val": [round(w_vah, 0), round(w_poc, 0), round(w_val, 0)],
+                                    "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
+                                    "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
+                                    "vp_confluences_3h_6h": ai_eval_s2["vp_confluences"],
                                     "agent_status": agent_msg,
                                     "ai_verdict": ai_eval_s2["verdict"],
                                     "ai_score": ai_eval_s2["score"],
@@ -2776,14 +2691,16 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian_v14():
+def start_background_guardian_v15():
+    # Vypnutí případného starého vlákna v14 v paměti
+    sys.__dict__["OKX_GUARDIAN_TOKEN"] = "STOP_OLD_V14"
     my_token = str(uuid.uuid4())
-    sys.__dict__["OKX_GUARDIAN_TOKEN"] = my_token
+    sys.__dict__["OKX_GUARDIAN_TOKEN_V15"] = my_token
 
     def _guardian_loop(thread_token):
         tick = 0
         while True:
-            if sys.__dict__.get("OKX_GUARDIAN_TOKEN") != thread_token:
+            if sys.__dict__.get("OKX_GUARDIAN_TOKEN_V15") != thread_token:
                 break
             try:
                 poll_realtime_okx_flow()
@@ -2808,7 +2725,7 @@ def start_background_guardian_v14():
     t.start()
     return my_token
 
-start_background_guardian_v14()
+start_background_guardian_v15()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -3035,9 +2952,9 @@ else:
     df_weekly = pd.DataFrame(columns=[
         "timestamp", "setup", "group", "direction", "position_usd", "entry", "sl", "sl_pct",
         "pb_pct", "tp_mode", "tp1", "tp2", "rrr", "box_mins",
-        "box_body_spread_pct", "box_mid", "box_cvd", "box_spot_bg", "trend_1h_72h",
+        "box_body_spread_pct", "box_mid", "box_cvd", "box_spot_bg", "trend_3h_6h",
         "cvd_5m_25m_45m", "spot_5m_25m_45m", "oi_5m_25m_45m",
-        "vp_1h_vah_poc_val", "vp_weekly_vah_poc_val", "agent_status",
+        "vp_3h_vah_poc_val", "vp_6h_vah_poc_val", "vp_confluences_3h_6h", "agent_status",
         "ai_verdict", "ai_score", "ai_real_rrr", "ai_rec_sl", "ai_rec_tp1", "ai_rec_tp2", "ai_rec_tp_mode", "ai_comment"
     ])
 
@@ -3067,10 +2984,12 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
         flow_metrics=flow_metrics_tuple,
         box_spot=scvd1
     )
+    vp3_t = test_ai["vp_3h"]
+    vp6_t = test_ai["vp_6h"]
     ok = odesli_upozorneni(
         "TEST_PING",
         "TEST SPOJENÍ TERMINÁL (BEZ EXEKUCE)",
-        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1: Uzavřené 5M svíčky + Bod B (1M CVD LL/HH nebo průraz 5M Box CVD) + volný PB vstup\n• S2: Bod A (Level Trigger) ➔ Bod B (Otočka/Knoty 5M) ➔ Bod C (OI Σ≤-50 / Δ≥30) ➔ Bod D (CVD Δ≥100 BTC do 9 sv.) ➔ Bod E (Hned Maker vstup)\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
+        f"✅ Režim 24/7 (do 20.11. 13:59) běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1: Uzavřené 5M svíčky + Bod B (1M CVD LL/HH nebo průraz 5M Box CVD) + volný PB vstup\n• S2: Bod A (Level Trigger) ➔ Bod B (Otočka/Knoty 5M) ➔ Bod C (OI Σ≤-50 / Δ≥30) ➔ Bod D (CVD Δ≥100 BTC do 9 sv.) ➔ Bod E (Hned Maker vstup)\n• 3H VP: VAH <b>{vp3_t['vah']:.0f}$</b> / POC <b>{vp3_t['poc']:.0f}$</b> / VAL <b>{vp3_t['val']:.0f}$</b>\n• 6H VP: VAH <b>{vp6_t['vah']:.0f}$</b> / POC <b>{vp6_t['poc']:.0f}$</b> / VAL <b>{vp6_t['val']:.0f}$</b>\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
         force=True
     )
     if ok:
@@ -3082,6 +3001,3 @@ if st.toggle("⏱️ Auto Refresh (20s)", value=False):
     time.sleep(20)
     st.rerun()
 # === KONEC ČÁSTI 4 ===
-
-
-
