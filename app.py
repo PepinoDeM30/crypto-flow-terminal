@@ -80,6 +80,8 @@ def get_realtime_engine_v14():
             "confirm_1m_ts": 0,
             "locked_at_sec": 0.0,
             "zone_extreme_p": 0.0,
+            "box_low_p": 0.0,
+            "box_high_p": 0.0,
             "box_mid": 0.0,
             "pb_pct": 0.0012,
             "sl_pct": 0.0030,
@@ -375,7 +377,7 @@ def manage_active_okx_lifecycle():
                     res_tp1 = place_maker_tp(c1, tp1_px)
                     res_tp2 = place_maker_tp(c2, tp2_px)
                     placed_ok = (str(res_tp1.get("code")) == "0" or str(res_tp2.get("code")) == "0")
-                    tp_notif_txt = f"🎯 Pozice (50/50) otevřena @ <b>{avg_px:.0f}$</b>.\nDo knihy vloženy 2x <b>Post-Only TP</b>:\n• TP1 (50 % – 1/2 Liq): <b>{tp1_px}$</b>\n• TP2 (50 % – Plný Liq): <b>{tp2_px}$</b>"
+                    tp_notif_txt = f"🎯 Pozice (50/50) otevřena @ <b>{avg_px:.0f}$</b>.\nDo knihy vloženy 2x <b>Post-Only TP</b>:\n• TP1 (50 % – Argon): <b>{tp1_px}$</b>\n• TP2 (50 % – Plný Liq): <b>{tp2_px}$</b>"
 
                 if placed_ok:
                     with ENGINE["lock"]:
@@ -486,7 +488,7 @@ def execute_okx_agent_trade(plan):
         except Exception:
             pass
 
-        # Použití přesného Stop-Lossu schváleného Argonem 4 (s pojistkou minimálního odstupu od skutečné Maker ceny)
+        # Použití přesného Stop-Lossu schváleného Argonem 4
         explicit_sl = float(plan.get("sl_market", 0.0) or 0.0)
         if side == "sell":
             if explicit_sl > maker_px * 1.0004:
@@ -629,6 +631,7 @@ js_theme_code = "\n".join([
 ])
 components.html(js_theme_code, height=0)
 
+# --- 3D GRAFICKÉ STYLY A TÉMATA ---
 css_styles = "\n".join([
     "<style>",
     "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800;900&display=swap');",
@@ -1261,7 +1264,7 @@ def compute_unified_trend_regime(candles_300, btc_price=0.0):
             regime = "STRONG_BULL" if (swing_6h_pct >= 2.20 and pos_in_6h >= 0.78) else "MILD_BULL"
             eff_move_3h_usd = max(eff_move_3h_usd, curr_p - min_6h)
             eff_move_3h_pct = (eff_move_3h_usd / max(min_6h, 1.0)) * 100.0
-        elif swing_6h_pct >= 1.50 and pos_in_6h <= 0.32 and curr_p <= ema_3h and ema_3h <= ema_6h:
+        elif swing_6h_pct >= 1.50 and pos_in_6h <= 0.32 and curr_p <= ema_3h and ema_3h >= ema_6h:
             regime = "STRONG_BEAR" if (swing_6h_pct >= 2.20 and pos_in_6h <= 0.22) else "MILD_BEAR"
             eff_move_3h_usd = max(eff_move_3h_usd, max_6h - curr_p)
             eff_move_3h_pct = (eff_move_3h_usd / max(curr_p, 1.0)) * 100.0
@@ -1286,9 +1289,6 @@ def compute_unified_trend_regime(candles_300, btc_price=0.0):
         return default_res
 
 # --- SOFTWARE MĚŘENÍ 3: OPRAVDOVÉ SWINGY PODLE UZAVŘENÝCH TĚL (CLOSE BODY) ---
-# Formace: 3 svíčky vlevo zavírající tělem (Close) do vrcholu/dna + 4. svíčka skutečné High/Low +
-# 3 svíčky vpravo zavírající tělem (Close) od vrcholu/dna. Pokud svíčka v řadě zavře opačně,
-# pravidlo se automaticky rozšíří ze 3 na 4 až 5 svíček.
 def _calc_untested_left_swings_raw(candles_300, btc_price):
     res = {"swing_highs": [], "swing_lows": []}
     if not candles_300 or len(candles_300) < 15:
@@ -1306,8 +1306,6 @@ def _calc_untested_left_swings_raw(candles_300, btc_price):
         ts_arr = [int(c[0]) for c in c_72_asc]
 
         def _check_left_body_closes(peak_idx, is_top):
-            # Hledáme 3 postupně vyšší (u Top) nebo nižší (u Bottom) Close těla směrem k vrcholu/dnu.
-            # Pokud některá svíčka v řadě zavře opačně, okno se rozšíří ze 3 na 4 až 5 svíček.
             end_i = peak_idx if (
                 (is_top and closes[peak_idx] >= closes[peak_idx - 1]) or
                 ((not is_top) and closes[peak_idx] <= closes[peak_idx - 1])
@@ -1349,8 +1347,6 @@ def _calc_untested_left_swings_raw(candles_300, btc_price):
             return False
 
         def _check_right_body_closes(peak_idx, is_top):
-            # Hledáme 3 postupně nižší (u Top) nebo vyšší (u Bottom) Close těla napravo od vrcholu/dna.
-            # Pokud svíčka v řadě zavře opačně, okno se rozšíří ze 3 na 4 až 5 svíček.
             run_ref = max(opens[peak_idx], closes[peak_idx]) if is_top else min(opens[peak_idx], closes[peak_idx])
             valid_steps = 0
             spoilers = 0
@@ -1388,7 +1384,6 @@ def _calc_untested_left_swings_raw(candles_300, btc_price):
             cand_l = lows[i]
             t_str = datetime.fromtimestamp(ts_arr[i] / 1000.0, tz_p).strftime("%H:%M")
 
-            # 1. KONTROLA OPRAVDOVÉHO SWING HIGH (TOP)
             if cand_h >= max(highs[max(0, i - 3):min(n, i + 4)]):
                 max_after_h = max(highs[i + 1:])
                 min_after_l = min(lows[i + 1:])
@@ -1402,7 +1397,6 @@ def _calc_untested_left_swings_raw(candles_300, btc_price):
                                 "reversal_pct": round(rev_drop_pct * 100.0, 2)
                             })
 
-            # 2. KONTROLA OPRAVDOVÉHO SWING LOW (BOTTOM)
             if cand_l <= min(lows[max(0, i - 3):min(n, i + 4)]):
                 min_after_l2 = min(lows[i + 1:])
                 max_after_h2 = max(highs[i + 1:])
@@ -1467,36 +1461,94 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     hard_veto_reasons = []
 
     # --------------------------------------------------------------------------
-    # ZÁKON 1 (PLATÍ PRO SETUP 1): KRABICE SE MUSÍ DOTÝKAT 3H/6H VAL NEBO VAH!
+    # ZÁKON 1 (PLATÍ PRO SETUP 1): AKTUALIZOVANÁ PRAVIDLA PRO 3H & 6H VOLUME PROFILE
+    # - Venku pod VAL -> ZÁKAZ LONG (SHORT povolen; pokud svíčka uzavírá na VAL, oba směry platné)
+    # - Venku nad VAH -> ZÁKAZ SHORT (LONG povolen; pokud svíčka uzavírá na VAH, oba směry platné)
+    # - Uvnitř VP (mezi VAL a VAH) -> ZÁKAZ obchodu mimo VAH, VAL a POC!
     # --------------------------------------------------------------------------
     b_low = min(float(box_low_p or entry_px), entry_px)
     b_high = max(float(box_high_p or entry_px), entry_px)
-    touch_tol = entry_px * 0.0005  # tolerance 0.05 % (~32 $) na dotyk knotu/svíčky
+    b_mid = 0.5 * (b_low + b_high)
+    touch_tol = entry_px * 0.0005  # tolerance 0.05 % (~32 $) na dotyk / uzavření svíčky na hladině
 
-    val_vah_candidates = [
-        ("3H_VAL", float(vp3.get("val", 0.0))),
-        ("3H_VAH", float(vp3.get("vah", 0.0))),
-        ("6H_VAL", float(vp6.get("val", 0.0))),
-        ("6H_VAH", float(vp6.get("vah", 0.0)))
-    ]
+    val_3h, poc_3h, vah_3h = float(vp3.get("val", 0.0)), float(vp3.get("poc", 0.0)), float(vp3.get("vah", 0.0))
+    val_6h, poc_6h, vah_6h = float(vp6.get("val", 0.0)), float(vp6.get("poc", 0.0)), float(vp6.get("vah", 0.0))
+
     touched_val_vah = []
-    touched_types = set()
-    for lbl, lvl_px in val_vah_candidates:
-        if lvl_px > 0 and (b_low - touch_tol) <= lvl_px <= (b_high + touch_tol):
-            touched_val_vah.append(f"{lbl}({lvl_px:.0f}$)")
-            touched_types.add("VAL" if "VAL" in lbl else "VAH")
+    touched_poc = []
+    on_3h_val = val_3h > 0 and (b_low - touch_tol) <= val_3h <= (b_high + touch_tol)
+    on_3h_vah = vah_3h > 0 and (b_low - touch_tol) <= vah_3h <= (b_high + touch_tol)
+    on_6h_val = val_6h > 0 and (b_low - touch_tol) <= val_6h <= (b_high + touch_tol)
+    on_6h_vah = vah_6h > 0 and (b_low - touch_tol) <= vah_6h <= (b_high + touch_tol)
+    on_3h_poc = poc_3h > 0 and (b_low - touch_tol) <= poc_3h <= (b_high + touch_tol)
+    on_6h_poc = poc_6h > 0 and (b_low - touch_tol) <= poc_6h <= (b_high + touch_tol)
+
+    if on_3h_val:
+        touched_val_vah.append(f"3H_VAL({val_3h:.0f}$)")
+    if on_3h_vah:
+        touched_val_vah.append(f"3H_VAH({vah_3h:.0f}$)")
+    if on_6h_val:
+        touched_val_vah.append(f"6H_VAL({val_6h:.0f}$)")
+    if on_6h_vah:
+        touched_val_vah.append(f"6H_VAH({vah_6h:.0f}$)")
+    if on_3h_poc:
+        touched_poc.append(f"3H_POC({poc_3h:.0f}$)")
+    if on_6h_poc:
+        touched_poc.append(f"6H_POC({poc_6h:.0f}$)")
+
+    all_touched_vp = touched_val_vah + touched_poc
+    on_any_val_or_vah = bool(touched_val_vah)
+    on_any_vp_level = bool(all_touched_vp)
+
+    outside_below_3h_val = (val_3h > 0 and b_mid < (val_3h - touch_tol) and not on_3h_val)
+    outside_below_6h_val = (val_6h > 0 and b_mid < (val_6h - touch_tol) and not on_6h_val)
+    outside_above_3h_vah = (vah_3h > 0 and b_mid > (vah_3h + touch_tol) and not on_3h_vah)
+    outside_above_6h_vah = (vah_6h > 0 and b_mid > (vah_6h + touch_tol) and not on_6h_vah)
+
+    is_outside_below_val = (outside_below_3h_val or outside_below_6h_val)
+    is_outside_above_vah = (outside_above_3h_vah or outside_above_6h_vah)
+    is_outside_vp = (is_outside_below_val or is_outside_above_vah)
 
     if setup_type == "SETUP_1":
-        if touched_val_vah:
+        if on_any_val_or_vah:
             score += 8
-            vp_touch_status = f"✅ Krabice ({b_low:.0f}$–{b_high:.0f}$) leží na {', '.join(touched_val_vah)}"
+            vp_touch_status = f"✅ Krabice ({b_low:.0f}$–{b_high:.0f}$) uzavírá na hraně {', '.join(all_touched_vp)} -> obchod platný"
             reasons.append(vp_touch_status)
-        else:
-            vp_touch_status = f"⛔ ZÁKAZ S1: Krabice ({b_low:.0f}$–{b_high:.0f}$) se nedotýká 3H/6H VAL ani VAH!"
+        elif is_outside_below_val and is_long:
+            under_lbl = []
+            if outside_below_3h_val:
+                under_lbl.append(f"3H_VAL({val_3h:.0f}$)")
+            if outside_below_6h_val:
+                under_lbl.append(f"6H_VAL({val_6h:.0f}$)")
+            vp_touch_status = f"⛔ ZÁKAZ S1: LONG venku pod {', '.join(under_lbl)} (mimo hranu VAL) je zakázán!"
             hard_veto_reasons.append(vp_touch_status)
             score -= 50
+        elif is_outside_above_vah and (not is_long):
+            above_lbl = []
+            if outside_above_3h_vah:
+                above_lbl.append(f"3H_VAH({vah_3h:.0f}$)")
+            if outside_above_6h_vah:
+                above_lbl.append(f"6H_VAH({vah_6h:.0f}$)")
+            vp_touch_status = f"⛔ ZÁKAZ S1: SHORT venku nad {', '.join(above_lbl)} (mimo hranu VAH) je zakázán!"
+            hard_veto_reasons.append(vp_touch_status)
+            score -= 50
+        elif is_outside_vp:
+            score += 7
+            out_zone_txt = "pod VAL (SHORT povolen)" if is_outside_below_val else "nad VAH (LONG povolen)"
+            extra_poc_txt = f" + dotyk {', '.join(touched_poc)}" if touched_poc else ""
+            vp_touch_status = f"✅ Krabice ({b_low:.0f}$–{b_high:.0f}$) venku z VP {out_zone_txt}{extra_poc_txt}"
+            reasons.append(vp_touch_status)
+        else:
+            if on_any_vp_level:
+                score += 7
+                vp_touch_status = f"✅ Uvnitř VP na hladině {', '.join(all_touched_vp)}"
+                reasons.append(vp_touch_status)
+            else:
+                vp_touch_status = f"⛔ ZÁKAZ S1: Krabice ({b_low:.0f}$–{b_high:.0f}$) je uvnitř VP mimo VAH, VAL i POC!"
+                hard_veto_reasons.append(vp_touch_status)
+                score -= 50
     else:
-        vp_touch_status = f"Setup 2 (Makro Level SFP) | Nejbližší 3H/6H hrany: {', '.join(touched_val_vah) if touched_val_vah else 'mimo box'}"
+        vp_touch_status = f"Setup 2 (Makro Level SFP) | Dotčené 3H/6H hladiny: {', '.join(all_touched_vp) if all_touched_vp else 'mimo hladiny'}"
 
     # --------------------------------------------------------------------------
     # ZÁKON 2 (PLATÍ PRO SETUP 1): ZÁKAZ OBCHODU PROTI SILNÉMU TRENDU (STRONG)
@@ -1535,39 +1587,94 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             reasons.append(f"Spot CVD podporuje {direction} ({spot_macro['summary']}).")
 
     # --------------------------------------------------------------------------
-    # ZÁKON 4: KONTROLA STOP-LOSSU PODLE PRAVÝCH SWINGŮ (3L+3R CLOSE BODY)
+    # ZÁKON 4: PRAVOMOC ARGON 4 PRO STOP-LOSS (MICRO 0.10%-0.20% | MEDIUM 0.20%-0.30% | MACRO 0.30%-0.40%)
     # --------------------------------------------------------------------------
-    rec_sl_px = tab_sl_px
-    swing_note = "Tabulkový SL je čistý (žádný ohrožující 3L+3R Close-Body swing)."
-    buf_pct = 0.0005
+    grp_u = str(group_id).upper()
+    if "MICRO" in grp_u:
+        min_sl_pct, max_sl_pct = 0.0010, 0.0020
+        sl_band_lbl = "MICRO 0.10%–0.20%"
+    elif "MEDIUM" in grp_u:
+        min_sl_pct, max_sl_pct = 0.0020, 0.0030
+        sl_band_lbl = "MEDIUM 0.20%–0.30%"
+    else:
+        min_sl_pct, max_sl_pct = 0.0030, 0.0040
+        sl_band_lbl = "MACRO 0.30%–0.40%"
+
+    buf_pct = 0.0004
+    vp_barriers = [
+        ("3H_VAL", val_3h), ("3H_POC", poc_3h), ("3H_VAH", vah_3h),
+        ("6H_VAL", val_6h), ("6H_POC", poc_6h), ("6H_VAH", vah_6h)
+    ]
 
     if is_long:
-        rel_lows = [s for s in left_swings.get("swing_lows", []) if (tab_sl_px * (1.0 - 0.0008)) <= s["price"] <= (entry_px * 0.9995)]
-        if rel_lows:
-            low_sw = min(rel_lows, key=lambda x: x["price"])
-            safe_sl = round(low_sw["price"] * (1.0 - buf_pct), 0)
-            if safe_sl < tab_sl_px:
-                rec_sl_px = safe_sl
-                swing_note = f"Posun SL z {tab_sl_px:.0f}$ na {rec_sl_px:.0f}$ (-0.05% pod 3L+3R Swing Low {low_sw['price']:.0f}$ z {low_sw['time']})."
-                warnings.append(f"🛡️ SL posunut pod 3L+3R Swing Low ({low_sw['price']:.0f}$) na {rec_sl_px:.0f}$.")
+        min_sl_px = round(entry_px * (1.0 - min_sl_pct), 0)
+        max_sl_px = round(entry_px * (1.0 - max_sl_pct), 0)
+        rec_sl_px = min_sl_px
+        sl_barriers = []
+
+        for b_lbl, b_px in vp_barriers:
+            if b_px <= 0:
+                continue
+            cand_sl = round(b_px * (1.0 - buf_pct), 0)
+            if (max_sl_px - entry_px * 0.0004) <= cand_sl <= min_sl_px:
+                sl_barriers.append((max(max_sl_px, cand_sl), f"{b_lbl}({b_px:.0f}$)"))
+
+        for sw in left_swings.get("swing_lows", []):
+            sw_px = float(sw["price"])
+            cand_sl = round(sw_px * (1.0 - buf_pct), 0)
+            if (max_sl_px - entry_px * 0.0005) <= cand_sl <= min_sl_px:
+                sl_barriers.append((max(max_sl_px, cand_sl), f"3L+3R Swing Low {sw_px:.0f}$ ({sw['time']})"))
+
+        if b_low < entry_px:
+            cand_box_sl = round(b_low * (1.0 - 0.0003), 0)
+            if max_sl_px <= cand_box_sl <= min_sl_px:
+                sl_barriers.append((cand_box_sl, f"Box Low({b_low:.0f}$)"))
+
+        if sl_barriers:
+            best_sl_item = min(sl_barriers, key=lambda x: x[0])
+            rec_sl_px = max(max_sl_px, min(min_sl_px, best_sl_item[0]))
+            act_pct = ( abs(entry_px - rec_sl_px) / max(entry_px, 1.0) ) * 100.0
+            swing_note = f"Argon SL {rec_sl_px:.0f}$ ({act_pct:.2f}% v pásmu {sl_band_lbl}) krytý pod {best_sl_item[1]}."
+        else:
+            act_pct = ( abs(entry_px - rec_sl_px) / max(entry_px, 1.0) ) * 100.0
+            swing_note = f"Základní SL {rec_sl_px:.0f}$ ({act_pct:.2f}% v pásmu {sl_band_lbl} – žádné ohrožující VP/Swingy)."
     else:
-        rel_highs = [s for s in left_swings.get("swing_highs", []) if (entry_px * 1.0005) <= s["price"] <= (tab_sl_px * (1.0 + 0.0008))]
-        if rel_highs:
-            high_sw = max(rel_highs, key=lambda x: x["price"])
-            safe_sl = round(high_sw["price"] * (1.0 + buf_pct), 0)
-            if safe_sl > tab_sl_px:
-                rec_sl_px = safe_sl
-                swing_note = f"Posun SL z {tab_sl_px:.0f}$ na {rec_sl_px:.0f}$ (+0.05% nad 3L+3R Swing High {high_sw['price']:.0f}$ z {high_sw['time']})."
-                warnings.append(f"🛡️ SL posunut nad 3L+3R Swing High ({high_sw['price']:.0f}$) na {rec_sl_px:.0f}$.")
+        min_sl_px = round(entry_px * (1.0 + min_sl_pct), 0)
+        max_sl_px = round(entry_px * (1.0 + max_sl_pct), 0)
+        rec_sl_px = min_sl_px
+        sl_barriers = []
+
+        for b_lbl, b_px in vp_barriers:
+            if b_px <= 0:
+                continue
+            cand_sl = round(b_px * (1.0 + buf_pct), 0)
+            if min_sl_px <= cand_sl <= (max_sl_px + entry_px * 0.0004):
+                sl_barriers.append((min(max_sl_px, cand_sl), f"{b_lbl}({b_px:.0f}$)"))
+
+        for sw in left_swings.get("swing_highs", []):
+            sw_px = float(sw["price"])
+            cand_sl = round(sw_px * (1.0 + buf_pct), 0)
+            if min_sl_px <= cand_sl <= (max_sl_px + entry_px * 0.0005):
+                sl_barriers.append((min(max_sl_px, cand_sl), f"3L+3R Swing High {sw_px:.0f}$ ({sw['time']})"))
+
+        if b_high > entry_px:
+            cand_box_sl = round(b_high * (1.0 + 0.0003), 0)
+            if min_sl_px <= cand_box_sl <= max_sl_px:
+                sl_barriers.append((cand_box_sl, f"Box High({b_high:.0f}$)"))
+
+        if sl_barriers:
+            best_sl_item = max(sl_barriers, key=lambda x: x[0])
+            rec_sl_px = min(max_sl_px, max(min_sl_px, best_sl_item[0]))
+            act_pct = ( abs(entry_px - rec_sl_px) / max(entry_px, 1.0) ) * 100.0
+            swing_note = f"Argon SL {rec_sl_px:.0f}$ ({act_pct:.2f}% v pásmu {sl_band_lbl}) krytý nad {best_sl_item[1]}."
+        else:
+            act_pct = ( abs(entry_px - rec_sl_px) / max(entry_px, 1.0) ) * 100.0
+            swing_note = f"Základní SL {rec_sl_px:.0f}$ ({act_pct:.2f}% v pásmu {sl_band_lbl} – žádné ohrožující VP/Swingy)."
 
     risk_usd = max(abs(entry_px - rec_sl_px), 1.0)
-    sl_dist_pct = risk_usd / max(entry_px, 1.0)
-    if sl_dist_pct > 0.0045:
-        score -= 20
-        warnings.append(f"⚠️ SL za levým swingem je daleko ({sl_dist_pct*100:.2f}%).")
 
     # --------------------------------------------------------------------------
-    # ZÁKON 5: DYNAMICKÝ PRŮBĚŽNÝ TP1 (POC / OPAČNÉ VAH-VAL / 3L+3R SWING) + FINÁLNÍ TP2 NA LIKVIDACI
+    # ZÁKON 5: DYNAMICKÝ PRŮBĚŽNÝ TP1 + FINÁLNÍ TP2 NA LIKVIDACI
     # --------------------------------------------------------------------------
     rec_tp2_px = round(liq_tp2_px, 0)
     rec_tp_mode = "SPLIT_50_50"
@@ -1576,10 +1683,9 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     tp1_candidates = []
     if is_long:
         for lbl, px in [
-            ("3H_POC", float(vp3.get("poc", 0.0))),
-            ("6H_POC", float(vp6.get("poc", 0.0))),
-            ("3H_VAH", float(vp3.get("vah", 0.0))),
-            ("6H_VAH", float(vp6.get("vah", 0.0)))
+            ("3H_POC", poc_3h), ("6H_POC", poc_6h),
+            ("3H_VAH", vah_3h), ("6H_VAH", vah_6h),
+            ("3H_VAL", val_3h), ("6H_VAL", val_6h)
         ]:
             if (entry_px + min_tp1_dist) <= px <= (rec_tp2_px - 15.0):
                 tp1_candidates.append({"label": lbl, "price": round(px - 5.0, 0), "kind": "VAH" if "VAH" in lbl else "POC"})
@@ -1590,10 +1696,9 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
         tp1_candidates = sorted(tp1_candidates, key=lambda x: x["price"])
     else:
         for lbl, px in [
-            ("3H_POC", float(vp3.get("poc", 0.0))),
-            ("6H_POC", float(vp6.get("poc", 0.0))),
-            ("3H_VAL", float(vp3.get("val", 0.0))),
-            ("6H_VAL", float(vp6.get("val", 0.0)))
+            ("3H_POC", poc_3h), ("6H_POC", poc_6h),
+            ("3H_VAL", val_3h), ("6H_VAL", val_6h),
+            ("3H_VAH", vah_3h), ("6H_VAH", vah_6h)
         ]:
             if (rec_tp2_px + 15.0) <= px <= (entry_px - min_tp1_dist):
                 tp1_candidates.append({"label": lbl, "price": round(px + 5.0, 0), "kind": "VAL" if "VAL" in lbl else "POC"})
@@ -1618,7 +1723,7 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     tp_note = f"{tp1_reason_lbl} | Finální TP2 (50%) na Likvidačním magnetu ({rec_tp2_px:.0f}$)."
 
     # --------------------------------------------------------------------------
-    # KONZULTACE S GOOGLE AI STUDIEM (GEMINI MŮŽE UPŘESNIT TP1 A SL)
+    # KONZULTACE S GOOGLE AI STUDIEM
     # --------------------------------------------------------------------------
     ai_comment = ""
     gemini_key = OKX_SECRETS.get("GEMINI_API_KEY", "")
@@ -1628,7 +1733,8 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
                 "setup": f"{setup_type} ({group_id}) {direction}",
                 "entry": round(entry_px, 1),
                 "box_range": [round(b_low, 1), round(b_high, 1)],
-                "touched_3h_6h_val_vah": touched_val_vah,
+                "vp_status": vp_touch_status,
+                "sl_allowed_band": sl_band_lbl,
                 "recommended_sl": round(rec_sl_px, 1),
                 "tp1_candidates": tp1_candidates[:6],
                 "default_selected_tp1": round(rec_tp1_px, 1),
@@ -1641,8 +1747,9 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
             }
             sys_prompt = (
                 "Jsi Argon 4 AI Boss s plnou pravomocí nad exekucí na OKX. "
-                "Zkontroluj obchod a kandidáty na průběžný TP1 (POC, VAH/VAL, 3L+3R Close-Body Swing), přičemž finální TP2 je vždy na Likvidačním magnetu. "
-                "Odpověz stručně v češtině (max 2 věty), proč obchod schvaluješ nebo zamítáš a jaký průběžný TP1 volíš."
+                "Zkontroluj obchod, umístění SL (krytého za VAL/VAH/POC nebo 3L+3R Swingem v povoleném pásmu) "
+                "a průběžný TP1 (POC, VAH/VAL, Swing), přičemž finální TP2 je vždy na Likvidačním magnetu. "
+                "Odpověz stručně v češtině (max 2 věty), proč obchod schvaluješ a jaký SL a TP1 volíš."
             )
             for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
                 api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
@@ -1679,7 +1786,7 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     elif score >= 62 and real_rrr >= 1.35:
         verdict = "SCHVÁLENO"
         if not ai_comment:
-            ai_comment = f"{vp_touch_status} | {tp_note}"
+            ai_comment = f"{vp_touch_status} | {swing_note} | {tp_note}"
     else:
         verdict = "VAROVÁNÍ / ZAMÍTNUTO"
         if not ai_comment:
@@ -1692,10 +1799,10 @@ def evaluate_argon4_background(setup_type, group_id, direction, t_payload, candl
     telegram_block = (
         f"\n🧠 <b>ARGON 4 AI ROZHODNUTÍ ({boss_mode_lbl}):</b>\n"
         f"• Verdikt: {v_icon} <b>{verdict}</b> (Skóre: <b>{score}/100</b> | Reálné RRR: <b>{real_rrr:.2f}</b>)\n"
-        f"• Kap. 1 (3H/6H VAL & VAH filtr): <b>{vp_touch_status}</b>\n"
+        f"• Kap. 1 (3H/6H VP & Pozice k VAL/VAH/POC): <b>{vp_touch_status}</b>\n"
         f"• 3H/6H POC & Konfluence: 3H POC <b>{vp3['poc']:.0f}$</b> | 6H POC <b>{vp6['poc']:.0f}$</b> | Konfl: <b>{conf_str}</b>\n"
         f"• Kap. 2 (Trend 3H+6H): <b>{trend_info.get('summary_txt', '-')}</b>\n"
-        f"• Kap. 3 (Posudek SL – 3L+3R Swingy): <b>{rec_sl_px:.0f}$</b> ({swing_note})\n"
+        f"• Kap. 3 (Argon SL [{sl_band_lbl}] – VP & Swingy): <b>{rec_sl_px:.0f}$</b> ({swing_note})\n"
         f"• Kap. 4 (Průběžný TP1 & Finální Liq TP2): <b>TP1 {rec_tp1_px:.0f}$ / TP2 {rec_tp2_px:.0f}$ [{rec_tp_mode}]</b> ({tp_note})\n"
         f"• Kap. 5 (3H & 6H Spot CVD): <b>{spot_macro['summary']}</b>\n"
         f"• Zdůvodnění AI: <i>{ai_comment}</i>"
@@ -2064,7 +2171,7 @@ def fetch_okx_data():
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 [], [], [], [], [], {}, {}, {}, 75000.0, (0.0, 0.0, 0.0), (74500.0, 95.0, 72500.0, 95.0), [], [])
 
-# --- SETUP 1: MĚŘENÍ NA UZAVŘENÝCH 5M SVÍČKÁCH + POSLEDNÍ SLOVO ARGON 4 AI (3H/6H VAL & VAH, TREND, 3H/6H SPOT) ---
+# --- SETUP 1: MĚŘENÍ NA UZAVŘENÝCH 5M SVÍČKÁCH + POSLEDNÍ SLOVO ARGON 4 AI (3H/6H VP PRAVIDLA, TREND, 3H/6H SPOT, DYNAMICKÝ SL/TP) ---
 def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics):
     try:
         rem_s1 = get_setup_cooldown_remaining("S1_LOCK_1H", 3600)
@@ -2121,7 +2228,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
 
         prefix = "" if liquid_ok else "⏸️ "
 
-        # Všechny skupiny mají SPLIT_50_50: průběžný TP1 řídí Argon 4, finální TP2 je vždy plný Likvidační magnet
+        # Všechny skupiny mají SPLIT_50_50: průběžný TP1 a SL v pásmu řídí Argon 4, finální TP2 je vždy plný Likvidační magnet
         groups_cfg = [
             ("MACRO",  12, 36, 0.45, 3, 250.0, 0.0018, 0.0030, "SPLIT_50_50"),
             ("MEDIUM",  6, 18, 0.30, 2, 100.0, 0.0012, 0.0020, "SPLIT_50_50"),
@@ -2452,7 +2559,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                             "position_usd": 0.0,
                             "entry": t_payload["entry"],
                             "sl": ai_eval["rec_sl_px"],
-                            "sl_pct": round(active_sl * 100, 2),
+                            "sl_pct": round((abs(t_payload["entry"] - ai_eval["rec_sl_px"]) / max(t_payload["entry"], 1.0)) * 100, 2),
                             "pb_pct": round(active_pb * 100, 2),
                             "tp_mode": ai_eval["rec_tp_mode"],
                             "tp1": ai_eval["rec_tp1_px"],
@@ -2486,6 +2593,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 # 3. ARGON 4 SCHVÁLIL OBCHOD -> PŘEPÍŠEME SL, PRŮBĚŽNÝ TP1 A FINÁLNÍ LIQ TP2 PODLE JEHO ROZHODNUTÍ!
                 if ARGON_BOSS_MODE:
                     t_payload["sl_market"] = float(ai_eval["rec_sl_px"])
+                    t_payload["sl_pct"] = abs(t_payload["entry"] - float(ai_eval["rec_sl_px"])) / max(t_payload["entry"], 1.0)
                     t_payload["tp1_limit_50pct"] = float(ai_eval["rec_tp1_px"])
                     t_payload["tp2_limit_50pct"] = float(ai_eval["rec_tp2_px"])
                     t_payload["tp_mode"] = ai_eval["rec_tp_mode"]
@@ -2501,7 +2609,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                 log_block = (
                     f"\n📊 <b>DATA PRO ANALÝZU & ARGON 4 AI:</b>\n"
                     f"• Čas: {now_str} | Skupina: {active_group} | Směr: {active_dir} | RRR: {t_payload['rrr']} | Pozice: 2000$\n"
-                    f"• Parametry: PB {active_pb*100:.2f}% | Finální SL: {t_payload['sl_market']:.0f}$ | TP1 (Argon): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq): {t_payload['tp2_limit_50pct']:.0f}$\n"
+                    f"• Parametry: PB {active_pb*100:.2f}% | Argon SL ({t_payload['sl_pct']*100:.2f}%): {t_payload['sl_market']:.0f}$ | TP1 (Argon): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq): {t_payload['tp2_limit_50pct']:.0f}$\n"
                     f"• Krabice: {m_mins}M uzavř. ({active_box_low:.0f}$–{active_box_high:.0f}$) | Střed: {active_box_mid:.0f}$ | Box CVD: {m_cvd:+.1f} | Box Spot (bg): {m_spot:+.1f}\n"
                     f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
                     f"• Spot Trend: {ai_eval['spot_3h_6h']} | Trend (3H/6H): {trend_unified_str}\n"
@@ -2520,7 +2628,7 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
                         "position_usd": POSITION_SIZE_USD,
                         "entry": t_payload["entry"],
                         "sl": t_payload["sl_market"],
-                        "sl_pct": round(active_sl * 100, 2),
+                        "sl_pct": round(t_payload["sl_pct"] * 100, 2),
                         "pb_pct": round(active_pb * 100, 2),
                         "tp_mode": t_payload["tp_mode"],
                         "tp1": t_payload["tp1_limit_50pct"],
@@ -2630,8 +2738,6 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             ("LON L", lon_l, False, 14, lon_l_idx)
         ]
 
-        # Lokální čtení CVD výhradně pro Setup 2: pokud má 5M OKX u čerstvě uzavřené svíčky zpoždění (0.0),
-        # vezme si náš nasbíraný součet 5x 1M z paměti, aniž by měnil data v grafu nebo teploměrech.
         def _s2_read_5m_cvd(ts_5m):
             v = fut_map.get(ts_5m, 0.0)
             if abs(v) < 0.01:
@@ -2805,7 +2911,6 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
 
                 test_cvd = _s2_read_5m_cvd(ts_d)
 
-                # Pojistka proti 0.0 BTC kvůli zpoždění OKX: pokud u druhé svíčky chybí CVD (je pod ±0.5 BTC), nikdy nespustí Bod D!
                 if abs(test_cvd) < 0.5:
                     continue
 
@@ -2824,7 +2929,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                         t_payload["trigger_ready"] = True
                         entry_txt = (
                             f"✅ BOD E – MAKER {direction} SIGNÁL PO UZAVŘENÍ 5M SVÍČKY: {entry_now_p:.0f}$ (2000$) | "
-                            f"SL (0.30%): {t_payload['sl_market']:.0f}$ | TP1 (Argon 50%): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq 50%): {t_payload['tp2_limit_50pct']:.0f}$"
+                            f"SL (0.30–0.40%): {t_payload['sl_market']:.0f}$ | TP1 (Argon 50%): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq 50%): {t_payload['tp2_limit_50pct']:.0f}$"
                         )
                         triggered_msg = (
                             f"{prefix}🔥 SETUP 2 AKTIVNÍ ({name} Trigger ➔ {oi_cond_label} ➔ Bod D CVD Δ {cvd_anomaly_diff:.1f} BTC "
@@ -2834,7 +2939,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
                             now_str = get_prague_now().strftime("%Y-%m-%d %H:%M:%S")
 
-                            # 1. NEJPRVE ROZHODUJE ARGON 4 AI BOSS (SL ZA 3L+3R SWINGEM, PRŮBĚŽNÝ TP1, FINÁLNÍ LIQ TP2)
+                            # 1. NEJPRVE ROZHODUJE ARGON 4 AI BOSS (SL V PÁSMU ZA VP/SWINGEM, PRŮBĚŽNÝ TP1, FINÁLNÍ LIQ TP2)
                             ai_eval_s2 = evaluate_argon4_background(
                                 setup_type="SETUP_2",
                                 group_id=f"S2_{name}",
@@ -2883,7 +2988,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                         "level_price": round(val, 1),
                                         "entry": t_payload["entry"],
                                         "sl": ai_eval_s2["rec_sl_px"],
-                                        "sl_pct": 0.30,
+                                        "sl_pct": round((abs(t_payload["entry"] - ai_eval_s2["rec_sl_px"]) / max(t_payload["entry"], 1.0)) * 100, 2),
                                         "tp_mode": ai_eval_s2["rec_tp_mode"],
                                         "tp1": ai_eval_s2["rec_tp1_px"],
                                         "tp2": ai_eval_s2["rec_tp2_px"],
@@ -2918,6 +3023,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             # 3. ARGON 4 SCHVÁLIL OBCHOD -> PŘEPÍŠEME SL, PRŮBĚŽNÝ TP1 A FINÁLNÍ LIQ TP2 PODLE JEHO ROZHODNUTÍ!
                             if ARGON_BOSS_MODE:
                                 t_payload["sl_market"] = float(ai_eval_s2["rec_sl_px"])
+                                t_payload["sl_pct"] = abs(t_payload["entry"] - float(ai_eval_s2["rec_sl_px"])) / max(t_payload["entry"], 1.0)
                                 t_payload["tp1_limit_50pct"] = float(ai_eval_s2["rec_tp1_px"])
                                 t_payload["tp2_limit_50pct"] = float(ai_eval_s2["rec_tp2_px"])
                                 t_payload["tp_mode"] = ai_eval_s2["rec_tp_mode"]
@@ -2933,7 +3039,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             log_block = (
                                 f"\n📊 <b>DATA PRO ANALÝZU & ARGON 4 AI:</b>\n"
                                 f"• Čas: {now_str} | Setup: S2 ({name}) | Směr: {direction} | RRR: {t_payload['rrr']} | Pozice: 2000$\n"
-                                f"• Finální SL: {t_payload['sl_market']:.0f}$ | TP1 (Argon): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq): {t_payload['tp2_limit_50pct']:.0f}$\n"
+                                f"• Argon SL ({t_payload['sl_pct']*100:.2f}%): {t_payload['sl_market']:.0f}$ | TP1 (Argon): {t_payload['tp1_limit_50pct']:.0f}$ | TP2 (Liq): {t_payload['tp2_limit_50pct']:.0f}$\n"
                                 f"• Bod C (OI): {oi_cond_label} [1.sv: {oi_1_val:+.1f} / 2.sv: {oi_2_val:+.1f} BTC]\n"
                                 f"• Bod D (CVD 2 svíček): Rozdíl {cvd_anomaly_diff:.1f} BTC [Extrém sv.: {ref_cvd:+.1f} vs. nová: {test_cvd:+.1f} BTC]\n"
                                 f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
@@ -2954,7 +3060,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                                     "level_price": round(val, 1),
                                     "entry": t_payload["entry"],
                                     "sl": t_payload["sl_market"],
-                                    "sl_pct": 0.30,
+                                    "sl_pct": round(t_payload["sl_pct"] * 100, 2),
                                     "tp_mode": t_payload["tp_mode"],
                                     "tp1": t_payload["tp1_limit_50pct"],
                                     "tp2": t_payload["tp2_limit_50pct"],
@@ -3004,17 +3110,18 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian_v16():
-    # Vypnutí všech předchozích vláken v14 a v15 v paměti
+def start_background_guardian_v17():
+    # Vypnutí všech předchozích vláken v14, v15 a v16 v paměti
     sys.__dict__["OKX_GUARDIAN_TOKEN"] = "STOP_OLD_V14"
     sys.__dict__["OKX_GUARDIAN_TOKEN_V15"] = "STOP_OLD_V15"
+    sys.__dict__["OKX_GUARDIAN_TOKEN_V16"] = "STOP_OLD_V16"
     my_token = str(uuid.uuid4())
-    sys.__dict__["OKX_GUARDIAN_TOKEN_V16"] = my_token
+    sys.__dict__["OKX_GUARDIAN_TOKEN_V17"] = my_token
 
     def _guardian_loop(thread_token):
         tick = 0
         while True:
-            if sys.__dict__.get("OKX_GUARDIAN_TOKEN_V16") != thread_token:
+            if sys.__dict__.get("OKX_GUARDIAN_TOKEN_V17") != thread_token:
                 break
             try:
                 poll_realtime_okx_flow()
@@ -3039,7 +3146,7 @@ def start_background_guardian_v16():
     t.start()
     return my_token
 
-start_background_guardian_v16()
+start_background_guardian_v17()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -3230,7 +3337,7 @@ setups_html = "\n".join([
     '<div class="setups-container">',
     f'<div style="text-align: center; font-size: 11px; font-weight: 900; color: {liq_color}; letter-spacing: 1px; margin-bottom: 10px;">{liq_status_text}</div>',
     f'<div class="{box1_cls}">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (3H/6H VAL & VAH FILTR ➔ 1M CVD / BOX CVD ➔ ARGON 4 BOSS EXEKUCE 2000$)</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">⚡ S1 TOP-DOWN (3H/6H VP PRAVIDLA ➔ 1M CVD / BOX CVD ➔ ARGON 4 BOSS EXEKUCE 2000$)</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
@@ -3288,11 +3395,11 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
     api_status = "🟢 OKX API klíče načteny (AI Agent připraven – Pozice 2000$)" if (OKX_SECRETS.get("ENABLED") and OKX_SECRETS.get("API_KEY")) else "🔴 AI Agent vypnutý nebo chybí klíče"
     boss_txt = "🟢 PLNÁ PRAVOMOC (BOSS MODE ZAPNUTÝ)" if ARGON_BOSS_MODE else "⚪ Stínový poradce"
     gemini_status = f"🟢 Google AI Studio (Argon 4) propojeno | Režim: {boss_txt}" if OKX_SECRETS.get("GEMINI_API_KEY") else f"⚪ Google AI Studio klíč nenalezen | Režim: {boss_txt}"
-    test_plan = build_trade_plan("LONG", b_price, upper_p, lower_p, "TEST_ARGON4", sl_pct=0.0020, tp_mode="SPLIT_50_50")
+    test_plan = build_trade_plan("SHORT", b_price, upper_p, lower_p, "TEST_ARGON4", sl_pct=0.0015, tp_mode="SPLIT_50_50")
     test_ai = evaluate_argon4_background(
         setup_type="SETUP_1",
-        group_id="MEDIUM",
-        direction="LONG",
+        group_id="MICRO",
+        direction="SHORT",
         t_payload=test_plan,
         candles_300=c_300,
         candles_1m_fut=m1_fut,
@@ -3306,8 +3413,8 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
     vp6_t = test_ai["vp_6h"]
     ok = odesli_upozorneni(
         "TEST_PING",
-        "TEST SPOJENÍ TERMINÁL (ARGON 4 BOSS MODE)",
-        f"✅ Režim 24/7 s <b>ARGON 4 BOSS MODE</b> běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1 Zákony: Dotyk 3H/6H VAL nebo VAH + Zákaz proti STRONG trendu + Zákaz proti Spotu (3H > 100 & 6H > 200 BTC)\n• Výstupy (S1 i S2): Průběžný TP1 (50% + Auto-BE) řídí Argon 4 (POC/VAH/VAL/3L+3R Swing) | Finální TP2 (50%) vždy na Likvidačním magnetu\n• 3H VP: VAH <b>{vp3_t['vah']:.0f}$</b> / POC <b>{vp3_t['poc']:.0f}$</b> / VAL <b>{vp3_t['val']:.0f}$</b>\n• 6H VP: VAH <b>{vp6_t['vah']:.0f}$</b> / POC <b>{vp6_t['poc']:.0f}$</b> / VAL <b>{vp6_t['val']:.0f}$</b>\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
+        "TEST SPOJENÍ TERMINÁL (ARGON 4 BOSS MODE v17)",
+        f"✅ Režim 24/7 s <b>ARGON 4 BOSS MODE</b> běží!\n• Velikost pozice: <b>2 000 USD</b>\n• S1 VP Zákony: Zákaz LONG pod VAL + Zákaz SHORT nad VAH + Uvnitř VP jen na VAH/VAL/POC (Venku povolen SHORT pod VAL a LONG nad VAH)\n• Argon SL Pásma: MICRO <b>0.10–0.20%</b> | MEDIUM <b>0.20–0.30%</b> | MACRO <b>0.30–0.40%</b> (kryté za VP/3L+3R Swingy)\n• Výstupy (S1 i S2): Průběžný TP1 (50% + Auto-BE) řídí Argon 4 (POC/VAH/VAL/3L+3R Swing) | Finální TP2 (50%) vždy na Likvidačním magnetu\n• 3H VP: VAH <b>{vp3_t['vah']:.0f}$</b> / POC <b>{vp3_t['poc']:.0f}$</b> / VAL <b>{vp3_t['val']:.0f}$</b>\n• 6H VP: VAH <b>{vp6_t['vah']:.0f}$</b> / POC <b>{vp6_t['poc']:.0f}$</b> / VAL <b>{vp6_t['val']:.0f}$</b>\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
         force=True
     )
     if ok:
