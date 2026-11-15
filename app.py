@@ -2329,6 +2329,90 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
         return "Načítám data Setupu 1...", False
 # === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
 
+# --- UPRAVENÁ KAPITOLA 2 PRO ARGON 4 AI (POUZE PRO TEXTOVÝ POSUDEK NA TELEGRAMU) ---
+def _calc_3h_trend_chop_raw(candles_300):
+    default_res = {
+        "regime": "CHOP",
+        "efficiency_pct": 0.0,
+        "net_move_usd": 0.0,
+        "net_move_pct": 0.0,
+        "total_path_usd": 0.0,
+        "summary_txt": "CHOP (Efektivita 0.0%)"
+    }
+    if not candles_300 or len(candles_300) < 15:
+        return default_res
+    try:
+        c_36_asc = candles_300[1:37][::-1] if len(candles_300) >= 37 else candles_300[1:][::-1]
+        if len(c_36_asc) < 6:
+            return default_res
+
+        # 1. Měření 3H okna (36 uzavřených 5M svíček)
+        start_px = float(c_36_asc[0][1])
+        end_px = float(c_36_asc[-1][4])
+        net_diff_3h = end_px - start_px
+        net_move_usd = abs(net_diff_3h)
+        net_move_pct = (net_move_usd / max(start_px, 1.0)) * 100.0
+
+        total_path_usd = 0.0
+        prev_c = start_px
+        for c in c_36_asc:
+            h_v, l_v, cl_v = float(c[2]), float(c[3]), float(c[4])
+            total_path_usd += max(h_v - l_v, abs(cl_v - prev_c))
+            prev_c = cl_v
+
+        eff_3h_pct = (net_move_usd / max(total_path_usd, 1.0)) * 100.0
+        dir_3h = "BULL" if net_diff_3h >= 0 else "BEAR"
+
+        # 2. Měření posledního 1H impulsu (posledních 12 uzavřených 5M svíček)
+        c_12_sub = c_36_asc[-12:] if len(c_36_asc) >= 12 else c_36_asc
+        s1h_px = float(c_12_sub[0][1])
+        e1h_px = float(c_12_sub[-1][4])
+        diff_1h = e1h_px - s1h_px
+        move_1h_usd = abs(diff_1h)
+        move_1h_pct = (move_1h_usd / max(s1h_px, 1.0)) * 100.0
+
+        path_1h_usd = 0.0
+        p1h = s1h_px
+        for c in c_12_sub:
+            h_v, l_v, cl_v = float(c[2]), float(c[3]), float(c[4])
+            path_1h_usd += max(h_v - l_v, abs(cl_v - p1h))
+            p1h = cl_v
+
+        eff_1h_pct = (move_1h_usd / max(path_1h_usd, 1.0)) * 100.0
+        dir_1h = "BULL" if diff_1h >= 0 else "BEAR"
+
+        if move_1h_pct >= 0.85 and eff_1h_pct >= 16.0:
+            if move_1h_pct >= 1.25 or eff_1h_pct >= 24.0 or (dir_1h == dir_3h and net_move_pct >= 1.40):
+                regime = f"STRONG_{dir_1h}"
+            else:
+                regime = f"MILD_{dir_1h}"
+        elif net_move_pct >= 1.50:
+            if net_move_pct >= 2.00 or eff_3h_pct >= 15.0:
+                regime = f"STRONG_{dir_3h}"
+            else:
+                regime = f"MILD_{dir_3h}"
+        elif net_move_pct >= 0.70 and eff_3h_pct >= 14.0:
+            if eff_3h_pct >= 28.0 and net_move_pct >= 1.10:
+                regime = f"STRONG_{dir_3h}"
+            else:
+                regime = f"MILD_{dir_3h}"
+        else:
+            regime = "CHOP"
+
+        return {
+            "regime": regime,
+            "efficiency_pct": round(eff_3h_pct, 1),
+            "net_move_usd": round(net_move_usd, 0),
+            "net_move_pct": round(net_move_pct, 2),
+            "total_path_usd": round(total_path_usd, 0),
+            "summary_txt": (
+                f"{regime} (3H Přímka {net_move_usd:.0f}$ [{net_move_pct:.2f}%] / Klikatice {total_path_usd:.0f}$ = Ef. {eff_3h_pct:.1f}% | "
+                f"1H Impuls: {diff_1h:+.0f}$ [{move_1h_pct:.2f}%], Ef. {eff_1h_pct:.1f}%)"
+            )
+        }
+    except Exception:
+        return default_res
+
 # --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> OTOČKA NEBO KNOTY NA UZAVŘENÝCH 5M SVÍČKÁCH (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC MEZI 2 SVÍČKAMI DO 9 SVÍČEK (BOD D) -> HNED MAKER VSTUP (BOD E) ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p, vp_data, flow_metrics, candles_1m_fut=None):
     try:
@@ -2397,6 +2481,14 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             ("LON L", lon_l, False, 14, lon_l_idx)
         ]
 
+        # Lokální čtení CVD výhradně pro Setup 2: pokud má 5M OKX u čerstvě uzavřené svíčky zpoždění (0.0),
+        # vezme si náš nasbíraný součet 5x 1M z paměti, aniž by měnil data v grafu nebo teploměrech.
+        def _s2_read_5m_cvd(ts_5m):
+            v = fut_map.get(ts_5m, 0.0)
+            if abs(v) < 0.01:
+                v = get_1m_real_or_calibrated_delta(candles_1m_fut or [], ts_5m, is_spot=False)
+            return v
+
         def is_valid_macro_swing_sweep(lvl_val, is_high, form_idx, candidate_idx):
             if form_idx >= 0:
                 if (candidate_idx - form_idx) < 6:
@@ -2442,7 +2534,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if val <= 0 or now_prague.hour < valid_from_hour or n_today < 3:
                 continue
 
-            # BOD A: První vybrání Makro Levelu (level slouží pouze jako spouštěč alertu, jeho cena dál nehraje roli)
+            # BOD A: První vybrání Makro Levelu
             first_touch_idx = next(
                 (idx for idx, tc in enumerate(today_candles)
                  if tc[5] >= valid_from_hour and ((is_high and tc[2] >= val) or (not is_high and tc[3] <= val))),
@@ -2454,9 +2546,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if not is_valid_macro_swing_sweep(val, is_high, form_idx, first_touch_idx):
                 continue
 
-            # BOD B & BOD C: Hledáme otočku po vybrání levelu na dvojici sousedních 5M svíček:
-            # Povolena je jak klasická otočka těl (Červená+Zelená / Zelená+Červená),
-            # tak opačné pořadí s knoty (např. nejnižší Zelená s knotem + Červená s knotem).
+            # BOD B & BOD C: Hledáme otočku po vybrání levelu na dvojici sousedních 5M svíček (klasická i knotová)
             lock_c_idx = None
             ref_b_idx = None
             oi_1_val = 0.0
@@ -2474,11 +2564,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 rng_b2 = max(c_b2[2] - c_b2[3], 0.1)
 
                 if not is_high:
-                    # LONG:
-                    # 1) Klasická dvojice: 1. červená + 2. zelená
                     classic_turn = (c_b1[4] <= c_b1[1]) and (c_b2[4] > c_b2[1])
-                    # 2) Knotová dvojice (např. nejnižší Zelená s knotem + Červená s knotem):
-                    # Obě svíčky mají spodní odmítnutí (close nad spodními 30 % rozpětí nebo spodní knot >= 30 %)
                     low_wick_b1 = (min(c_b1[1], c_b1[4]) - c_b1[3]) / rng_b1
                     low_wick_b2 = (min(c_b2[1], c_b2[4]) - c_b2[3]) / rng_b2
                     close_pos_b1 = (c_b1[4] - c_b1[3]) / rng_b1
@@ -2490,10 +2576,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                     )
                     is_turn_pair = classic_turn or wick_turn
                 else:
-                    # SHORT:
-                    # 1) Klasická dvojice: 1. zelená + 2. červená
                     classic_turn = (c_b1[4] >= c_b1[1]) and (c_b2[4] < c_b2[1])
-                    # 2) Knotová dvojice (např. nejvyšší Červená s knotem + Zelená s knotem):
                     up_wick_b1 = (c_b1[2] - max(c_b1[1], c_b1[4])) / rng_b1
                     up_wick_b2 = (c_b2[2] - max(c_b2[1], c_b2[4])) / rng_b2
                     close_pos_b1 = (c_b1[2] - c_b1[4]) / rng_b1
@@ -2515,12 +2598,10 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 oi_sum = oi_1 + oi_2
                 oi_diff = abs(oi_1 - oi_2)
 
-                # BOD C1: Obě svíčky dohromady <= -50 BTC | BOD C2: Rozdíl mezi oběma svíčkami >= 30 BTC
                 cond_c1 = (oi_sum <= -50.0)
                 cond_c2 = (oi_diff >= 30.0)
 
                 if cond_c1 or cond_c2:
-                    # Referenční svíčka z dvojice je vždy ta s nejnižším Low (pro LONG) nebo nejvyšším High (pro SHORT)
                     if not is_high:
                         ref_b_idx = b_idx if c_b1[3] <= c_b2[3] else (b_idx + 1)
                     else:
@@ -2539,7 +2620,6 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                         oi_cond_label = f"C2 (ΔOI {oi_diff:.1f} ≥ 30)"
                     break
 
-            # Pokud ještě nenastal Bod B + C, ale jsme blízko po vybrání levelu (do 8 svíček), vypíšeme čekání na Bod B/C
             if lock_c_idx is None:
                 elapsed_from_touch = (n_today - 1) - first_touch_idx
                 if 0 <= elapsed_from_touch <= 8:
@@ -2549,11 +2629,12 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                     )
                 continue
 
-            # BOD D: Máme uzamčený Bod C v indexu lock_c_idx!
-            # Srovnáváme CVD nejnižší/nejvyšší svíčky z Bodu B (ref_b_idx) s každou uzavřenou testovací svíčkou
-            # (červenou nebo zelenou se spodním knotem >= 35 % pro Long / zelenou nebo červenou s horním knotem >= 35 % pro Short) v okně 1 až 9 svíček
+            # BOD D: Srovnání CVD referenční svíčky s testovací svíčkou v okně 1 až 9 svíček
             ref_ts = today_candles[ref_b_idx][0]
-            ref_cvd = fut_map.get(ref_ts, 0.0)
+            ref_cvd = _s2_read_5m_cvd(ref_ts)
+
+            if abs(ref_cvd) < 0.5:
+                continue
 
             max_d_idx = min(lock_c_idx + 9, n_today - 1)
             anomaly_found = False
@@ -2564,24 +2645,26 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 rng_d = max(c_d[2] - c_d[3], 0.1)
 
                 if not is_high:
-                    # LONG: červená svíčka NEBO zelená svíčka s výrazným spodním knotem (>= 35 % rozpětí)
                     low_wick_d = (min(c_d[1], c_d[4]) - c_d[3]) / rng_d
                     is_target_candle = (c_d[4] < c_d[1]) or (low_wick_d >= 0.35)
                 else:
-                    # SHORT: zelená svíčka NEBO červená svíčka s výrazným horním knotem (>= 35 % rozpětí)
                     up_wick_d = (c_d[2] - max(c_d[1], c_d[4])) / rng_d
                     is_target_candle = (c_d[4] > c_d[1]) or (up_wick_d >= 0.35)
 
                 if not is_target_candle:
                     continue
 
-                test_cvd = fut_map.get(ts_d, 0.0)
+                test_cvd = _s2_read_5m_cvd(ts_d)
+
+                # Pojistka proti 0.0 BTC kvůli zpoždění OKX: pokud u druhé svíčky chybí CVD (je pod ±0.5 BTC), nikdy nespustí Bod D!
+                if abs(test_cvd) < 0.5:
+                    continue
+
                 cvd_anomaly_diff = abs(test_cvd - ref_cvd)
 
                 # Podmínka Bodu D: Rozdíl v CVD mezi těmito dvěma konkrétními svíčkami >= 100 BTC
                 if cvd_anomaly_diff >= 100.0:
                     anomaly_found = True
-                    # BOD E: Pokud tato uzavřená svíčka právě skončila (poslední uzavřená svíčka), ihned otevíráme obchod!
                     if d_idx >= (n_today - 1):
                         direction = "SHORT" if is_high else "LONG"
                         entry_now_p = btc_price
@@ -2612,7 +2695,6 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                             trend_1h_str = compute_1h_trend_info(candles_1h, btc_price)
                             now_str = get_prague_now().strftime("%Y-%m-%d %H:%M:%S")
 
-                            # Neviditelný výpočet Argon 4 AI Agenta na pozadí (pouze pro Telegram a CSV)
                             ai_eval_s2 = evaluate_argon4_background(
                                 setup_type="SETUP_2",
                                 group_id=f"S2_{name}",
@@ -2732,9 +2814,9 @@ liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
 (cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9,
  cvd_12, scvd_12, c_12_asc, c_300, c_1h, fut_map, spot_map, oi_change_map,
- b_price, vp_data, liq_data, m1_fut, m1_spot) = fetch_okx_data()
+ b_price, vp_data, liq_d, m1_fut, m1_spot) = fetch_okx_data()
 poc_1h, vah_1h, val_1h = vp_data
-upper_p, upper_btc, lower_p, lower_btc = liq_data
+upper_p, upper_btc, lower_p, lower_btc = liq_d
 flow_metrics_tuple = (cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9)
 
 msg1, trg1 = scan_setup_1(c_300, c_1h, liquid_ok, m1_fut, b_price, upper_p, lower_p, fut_map, spot_map, vp_data, flow_metrics_tuple)
@@ -3000,3 +3082,6 @@ if st.toggle("⏱️ Auto Refresh (20s)", value=False):
     time.sleep(20)
     st.rerun()
 # === KONEC ČÁSTI 4 ===
+
+
+
