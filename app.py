@@ -876,26 +876,10 @@ def get_prague_now():
     except Exception:
         return datetime.now(timezone(timedelta(hours=1)))
 
+# --- TRVALÝ NONSTOP REŽIM 24/7 (BEZ LIKVIDNÍCH HODIN A BEZ VÍKENDOVÉ PAUZY) ---
 def check_liquid_hours():
     now_p = get_prague_now()
-    try:
-        cutoff_24_7 = datetime(2026, 11, 20, 13, 59, 59, tzinfo=now_p.tzinfo)
-        if now_p <= cutoff_24_7:
-            return True, f"🟢 24/7 REŽIM S ARGON 4 AI AKTIVNÍ ({now_p.strftime('%d.%m. %H:%M')}) | Pozice {POSITION_SIZE_USD:.0f}$"
-    except Exception:
-        return True, f"🟢 24/7 REŽIM S ARGON 4 AI AKTIVNÍ ({now_p.strftime('%H:%M')})"
-
-    if now_p.weekday() >= 5:
-        return False, f"⏸️ VÍKENDOVÝ REŽIM ({now_p.strftime('%H:%M')}) – Alarmy vypnuty"
-
-    mins = now_p.hour * 60 + now_p.minute
-    in_asia = (2 * 60) <= mins < (5 * 60)
-    in_london = (9 * 60) <= mins <= (10 * 60 + 30)
-    in_ny = (14 * 60) <= mins < (19 * 60)
-
-    if in_asia or in_london or in_ny:
-        return True, f"🟢 LIKVIDNÍ OKNO AKTIVNÍ ({now_p.strftime('%H:%M')}) | Top-Down S1 + S2 (Pozice {POSITION_SIZE_USD:.0f}$)"
-    return False, f"⏸️ MIMO LIKVIDNÍ HODINY ({now_p.strftime('%H:%M')}) – Alarmy v pohotovosti"
+    return True, f"🟢 24/7 NONSTOP REŽIM S ARGON 4 AI AKTIVNÍ ({now_p.strftime('%d.%m. %H:%M')}) | Pozice {POSITION_SIZE_USD:.0f}$"
 
 @st.cache_data(ttl=30)
 def load_trading_data():
@@ -2659,9 +2643,11 @@ def scan_setup_1(candles_300, candles_1h, liquid_ok, candles_1m_fut, btc_price, 
         return "Načítám data Setupu 1...", False
 # === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
 
-# --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> OTOČKA NEBO KNOTY NA UZAVŘENÝCH 5M SVÍČKÁCH (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC MEZI 2 SVÍČKAMI DO 9 SVÍČEK (BOD D) -> POSUDEK ARGON 4 BOSS -> MAKER VSTUP (BOD E) ---
+# --- SETUP 2: MACRO LEVEL TRIGGER (BOD A) -> POJISTKA MAX 0.35% ZA LEVEL -> OTOČKA/KNOTY 5M (BOD B) -> OI ANOMÁLIE C1/C2 (BOD C) -> CVD ANOMÁLIE ≥100 BTC DO 9 SV. (BOD D) -> ARGON 4 BOSS -> MAKER VSTUP (BOD E) ---
 def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc_price, upper_p, lower_p, vp_data, flow_metrics, candles_1m_fut=None, spot_map=None):
     try:
+        S2_MAX_LEVEL_DIFF_PCT = 0.0035  # Max povolený únik za Makro Level (0.35 %) – jinak jde o průraz, ne SFP
+
         rem_s2 = get_setup_cooldown_remaining("S2_LOCK_1H", 3600)
         if rem_s2 > 0:
             return f"🔒 Setup 2 uzamčen na 1H (zbývá {rem_s2 // 60 + 1} min) | Setup 1 povolen.", False, ""
@@ -2790,6 +2776,17 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             if not is_valid_macro_swing_sweep(val, is_high, form_idx, first_touch_idx):
                 continue
 
+            # POJISTKA 0.35 %: Pokud 5M svíčka uzavře víc než 0.35 % za levelem, jde o průraz (ne SFP)
+            def _level_broken_away(end_idx_incl):
+                seg = today_candles[first_touch_idx:end_idx_incl + 1]
+                if is_high:
+                    return any(tc[4] > val * (1.0 + S2_MAX_LEVEL_DIFF_PCT) for tc in seg)
+                else:
+                    return any(tc[4] < val * (1.0 - S2_MAX_LEVEL_DIFF_PCT) for tc in seg)
+
+            if _level_broken_away(first_touch_idx):
+                continue
+
             # BOD B & BOD C: Hledáme otočku po vybrání levelu na dvojici sousedních 5M svíček (klasická i knotová)
             lock_c_idx = None
             ref_b_idx = None
@@ -2801,6 +2798,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
 
             search_limit_b = min(first_touch_idx + 8, n_today - 2)
             for b_idx in range(first_touch_idx, search_limit_b + 1):
+                if _level_broken_away(b_idx + 1):
+                    break
+
                 c_b1 = today_candles[b_idx]
                 c_b2 = today_candles[b_idx + 1]
 
@@ -2866,7 +2866,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
 
             if lock_c_idx is None:
                 elapsed_from_touch = (n_today - 1) - first_touch_idx
-                if 0 <= elapsed_from_touch <= 8:
+                if 0 <= elapsed_from_touch <= 8 and not _level_broken_away(n_today - 1):
                     turn_wait_str = "Otočka/Knoty 5M"
                     pending_status_msgs.append(
                         f"⏳ Bod A ({name} vybrán) – čekám na Bod B ({turn_wait_str}) & Bod C (OI Σ≤-50 nebo Δ≥30 BTC)"
@@ -2884,6 +2884,9 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             anomaly_found = False
 
             for d_idx in range(lock_c_idx + 1, max_d_idx + 1):
+                if _level_broken_away(d_idx):
+                    break
+
                 c_d = today_candles[d_idx]
                 ts_d = c_d[0]
                 rng_d = max(c_d[2] - c_d[3], 0.1)
@@ -2909,6 +2912,13 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                 if cvd_anomaly_diff >= 100.0:
                     anomaly_found = True
                     if d_idx >= (n_today - 1):
+                        entry_beyond_limit = (
+                            (btc_price > val * (1.0 + S2_MAX_LEVEL_DIFF_PCT)) if is_high
+                            else (btc_price < val * (1.0 - S2_MAX_LEVEL_DIFF_PCT))
+                        )
+                        if entry_beyond_limit:
+                            break
+
                         direction = "SHORT" if is_high else "LONG"
                         entry_now_p = btc_price
                         t_payload = build_trade_plan(
@@ -3080,7 +3090,7 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
                     break
 
             candles_since_lock = (n_today - 1) - lock_c_idx
-            if not anomaly_found and 0 <= candles_since_lock < 9:
+            if not anomaly_found and 0 <= candles_since_lock < 9 and not _level_broken_away(n_today - 1):
                 wait_c_type = "červenou/knotovou" if not is_high else "zelenou/knotovou"
                 pending_status_msgs.append(
                     f"🔒 {name} Bod C uzamčen ({oi_cond_label} | Extrém CVD: {ref_cvd:+.1f} BTC) – "
@@ -3091,22 +3101,23 @@ def scan_setup_2(candles_300, candles_1h, fut_map, oi_change_map, liquid_ok, btc
             return triggered_msg, is_triggered, levels_str
         elif pending_status_msgs:
             return " | ".join(pending_status_msgs), False, levels_str
-        return "Skenuji Setup 2 (Bod A: Makro Level Trigger ➔ Bod B: Otočka/Knoty 5M ➔ Bod C: OI Σ≤-50 / Δ≥30 ➔ Bod D: CVD Δ≥100 BTC do 9 sv. ➔ Argon 4 Boss)...", False, levels_str
+        return "Skenuji Setup 2 (Bod A: Makro Level Trigger [max 0.35%] ➔ Bod B: Otočka/Knoty 5M ➔ Bod C: OI Σ≤-50 / Δ≥30 ➔ Bod D: CVD Δ≥100 BTC do 9 sv. ➔ Argon 4 Boss)...", False, levels_str
     except Exception:
         return "Načítám levely...", False, ""
 
 @st.cache_resource
-def start_background_guardian_v17():
+def start_background_guardian_v18():
     sys.__dict__["OKX_GUARDIAN_TOKEN"] = "STOP_OLD_V14"
     sys.__dict__["OKX_GUARDIAN_TOKEN_V15"] = "STOP_OLD_V15"
     sys.__dict__["OKX_GUARDIAN_TOKEN_V16"] = "STOP_OLD_V16"
+    sys.__dict__["OKX_GUARDIAN_TOKEN_V17"] = "STOP_OLD_V17"
     my_token = str(uuid.uuid4())
-    sys.__dict__["OKX_GUARDIAN_TOKEN_V17"] = my_token
+    sys.__dict__["OKX_GUARDIAN_TOKEN_V18"] = my_token
 
     def _guardian_loop(thread_token):
         tick = 0
         while True:
-            if sys.__dict__.get("OKX_GUARDIAN_TOKEN_V17") != thread_token:
+            if sys.__dict__.get("OKX_GUARDIAN_TOKEN_V18") != thread_token:
                 break
             try:
                 poll_realtime_okx_flow()
@@ -3131,7 +3142,7 @@ def start_background_guardian_v17():
     t.start()
     return my_token
 
-start_background_guardian_v17()
+start_background_guardian_v18()
 
 liquid_ok, liq_status_text = check_liquid_hours()
 total_pnl, win_rate = load_trading_data()
@@ -3326,7 +3337,7 @@ setups_html = "\n".join([
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg1.replace(chr(10), "<br>")}</div>',
     '</div>',
     f'<div class="{box2_cls}" style="margin-bottom: 0;">',
-    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: BOD A (LEVEL TRIGGER) ➔ BOD B (OTOČKA/KNOTY 5M) ➔ BOD C (OI Σ≤-50 / Δ≥30) ➔ BOD D (CVD Δ≥100) ➔ ARGON 4 BOSS</div>',
+    '<div style="color: #f7931a; font-weight: 900; font-size: 17px; margin-bottom: 5px;">🎯 S2: BOD A (LEVEL MAX 0.35%) ➔ BOD B (OTOČKA/KNOTY 5M) ➔ BOD C (OI Σ≤-50 / Δ≥30) ➔ BOD D (CVD Δ≥100) ➔ ARGON 4 BOSS</div>',
     f'<div style="color: #e2e8f0; font-size: 14px; font-weight: 700;">{msg2.replace(chr(10), "<br>")}</div>',
     f'<div style="color: #00f3ff; font-size: 12px; margin-top: 6px; font-weight: 800;">Zbývající levely: {l_str}</div>',
     '</div>',
@@ -3398,8 +3409,8 @@ if st.button("📲 OTESTOVAT SPOJENÍ (BEZ OTEVŘENÍ OBCHODU)"):
     vp6_t = test_ai["vp_6h"]
     ok = odesli_upozorneni(
         "TEST_PING",
-        "TEST SPOJENÍ TERMINÁL (ARGON 4 BOSS MODE v17)",
-        f"✅ Režim 24/7 s <b>ARGON 4 BOSS MODE</b> běží!\n• Velikost pozice: <b>{POSITION_SIZE_USD:.0f} USD</b>\n• S1 VP Zákony: Zákaz LONG pod VAL + Zákaz SHORT nad VAH + Uvnitř VP jen na VAH/VAL/POC (Venku povolen SHORT pod VAL a LONG nad VAH)\n• Argon SL Pásma: MICRO <b>0.10–0.20%</b> | MEDIUM <b>0.20–0.30%</b> | MACRO <b>0.30–0.40%</b> (kryté za VP/3L+3R Swingy)\n• Výstupy (S1 i S2): Průběžný TP1 (50% + Auto-BE) řídí Argon 4 (POC/VAH/VAL/3L+3R Swing) | Finální TP2 (50%) vždy na Likvidačním magnetu\n• 3H VP: VAH <b>{vp3_t['vah']:.0f}$</b> / POC <b>{vp3_t['poc']:.0f}$</b> / VAL <b>{vp3_t['val']:.0f}$</b>\n• 6H VP: VAH <b>{vp6_t['vah']:.0f}$</b> / POC <b>{vp6_t['poc']:.0f}$</b> / VAL <b>{vp6_t['val']:.0f}$</b>\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
+        "TEST SPOJENÍ TERMINÁL (ARGON 4 BOSS MODE v18)",
+        f"✅ Režim 24/7 NONSTOP s <b>ARGON 4 BOSS MODE</b> běží!\n• Velikost pozice: <b>{POSITION_SIZE_USD:.0f} USD</b>\n• S2 SFP Pojistka: Max. únik <b>0.35 %</b> za Makro Level (jinak se ruší jako průraz)\n• S1 VP Zákony: Zákaz LONG pod VAL + Zákaz SHORT nad VAH + Uvnitř VP jen na VAH/VAL/POC (Venku povolen SHORT pod VAL a LONG nad VAH)\n• Argon SL Pásma: MICRO <b>0.10–0.20%</b> | MEDIUM <b>0.20–0.30%</b> | MACRO <b>0.30–0.40%</b> (kryté za VP/3L+3R Swingy)\n• Výstupy (S1 i S2): Průběžný TP1 (50% + Auto-BE) řídí Argon 4 (POC/VAH/VAL/3L+3R Swing) | Finální TP2 (50%) vždy na Likvidačním magnetu\n• 3H VP: VAH <b>{vp3_t['vah']:.0f}$</b> / POC <b>{vp3_t['poc']:.0f}$</b> / VAL <b>{vp3_t['val']:.0f}$</b>\n• 6H VP: VAH <b>{vp6_t['vah']:.0f}$</b> / POC <b>{vp6_t['poc']:.0f}$</b> / VAL <b>{vp6_t['val']:.0f}$</b>\n• Zapsané obchody v CSV: <b>{len(weekly_logs)}</b>\n• Stav OKX: {api_status}\n• Stav Mozku: {gemini_status}\nLive BTC: {b_price:.0f}${test_ai['telegram_block']}",
         force=True
     )
     if ok:
