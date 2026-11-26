@@ -15,13 +15,13 @@ import requests
 import streamlit as st
 
 # ==============================================================================
-# KONFIGURACE TERMINÁLU: ARGON 4 BOSS MODE v19
+# KONFIGURACE TERMINÁLU: ARGON 4 BOSS MODE v19.1
 # Strategie: Čistý Setup 1 (MEDIUM + MACRO) | Trend: CHOP + WITH_TREND
 # Výstup: 100% pozice na pevný Maker TP = 2.3x SL (bez 50/50, bez Auto-BE)
 # Provoz: 24/7 NONSTOP | Testovací období do neděle 6. 12. 2026
 # ==============================================================================
 
-APP_VERSION = "v19"
+APP_VERSION = "v19.1"
 OKX_PRIVATE_BASE_URL = "https://eea.okx.com"
 OKX_PUBLIC_BASE_URL = "https://www.okx.com"
 OKX_INST_ID = "BTC-USD_UM_XPERP-310404"
@@ -36,7 +36,9 @@ TAKER_FEE_RATE = 0.0005      # 0.05 % Taker (Market SL)
 
 S1_MEMORY_TTL_SEC = 1800     # 30 minut platnost uzamčené krabice
 S1_COOLDOWN_SEC = 3600       # 1H zámek po exekuci Setupu 1
-ENTRY_ORDER_TIMEOUT_SEC = 900  # 15 minut timeout na nevyplněnou vstupní limitku
+ENTRY_ORDER_TIMEOUT_SEC = 300          # 5 minut timeout na nevyplněnou vstupní limitku
+MAX_MISSED_BREAKOUT_PCT = 0.0050       # Cena > 0.50 % mimo box = ujetý vlak (skip)
+BOX_INVALIDATION_PCT = 0.0015          # Cena > 0.15 % proti nám = absorpce padla
 SCAN_INTERVAL_SEC = 8        # Cyklus skeneru na pozadí (vteřiny)
 
 GROUP_RANK = {
@@ -49,7 +51,7 @@ SL_BANDS = {
     "MACRO":  (0.0035, 0.0045),  # 0.35 % – 0.45 %
 }
 
-CSV_LOG_PATH = "argon4_v19_trades.csv"
+CSV_LOG_PATH = "argon4_v19_1_trades.csv"
 CSV_COLUMNS = [
     "timestamp", "version", "session_tag", "setup", "group", "direction",
     "position_usd", "entry", "sl", "sl_pct", "tp", "tp_pct",
@@ -59,34 +61,41 @@ CSV_COLUMNS = [
     "trend_regime", "trend_alignment", "trend_3h_6h_detail", "spot_3h_6h",
     "cvd_5m_25m_45m", "spot_5m_25m_45m", "oi_5m_25m_45m",
     "vp_3h_vah_poc_val", "vp_6h_vah_poc_val", "vp_confluences_3h_6h",
-    "vp_obstacles_to_tp", "agent_status", "ai_verdict", "ai_score", "ai_comment"
+    "vp_obstacles_to_tp", "agent_status", "ai_verdict", "ai_score", "ai_comment",
+    "entry_mode", "entry_1m_delta_state"
 ]
 
 
 # ==============================================================================
-# SECRETS & NASTAVENÍ
+# SECRETS & NASTAVENÍ (PODPORA ALIASŮ I VNOŘENÝCH SEKCÍ V STREAMLIT SECRETS)
 # ==============================================================================
-def get_secret_val(key, default=""):
+def get_secret_val(keys, default=""):
+    from collections.abc import Mapping
+    if isinstance(keys, str):
+        keys = (keys,)
     try:
-        if key in st.secrets:
-            val = st.secrets[key]
-            if val is not None and str(val).strip() != "":
-                return str(val).strip()
-        for section_name in ("OKX_SECRETS", "SECRETS", "okx", "telegram", "gemini"):
-            if section_name in st.secrets and isinstance(st.secrets[section_name], dict):
-                sub = st.secrets[section_name]
-                if key in sub and sub[key] is not None and str(sub[key]).strip() != "":
-                    return str(sub[key]).strip()
+        for k in keys:
+            if k in st.secrets:
+                val = st.secrets[k]
+                if val is not None and not isinstance(val, Mapping) and str(val).strip() != "":
+                    return str(val).strip()
+        for sec_key in st.secrets:
+            sub = st.secrets[sec_key]
+            if isinstance(sub, Mapping):
+                for k in keys:
+                    if k in sub and sub[k] is not None and str(sub[k]).strip() != "":
+                        return str(sub[k]).strip()
     except Exception:
         pass
-    env_val = os.environ.get(key, "")
-    if env_val and env_val.strip() != "":
-        return env_val.strip()
+    for k in keys:
+        env_val = os.environ.get(k, "")
+        if env_val and env_val.strip() != "":
+            return env_val.strip()
     return default
 
 
-def get_bool_secret(key, default=True):
-    raw = str(get_secret_val(key, str(default))).strip().lower()
+def get_bool_secret(keys, default=True):
+    raw = str(get_secret_val(keys, str(default))).strip().lower()
     if raw in ("1", "true", "yes", "on", "ano"):
         return True
     if raw in ("0", "false", "no", "off", "ne"):
@@ -96,15 +105,15 @@ def get_bool_secret(key, default=True):
 
 def load_runtime_config():
     return {
-        "OKX_API_KEY": get_secret_val("OKX_API_KEY", ""),
-        "OKX_SECRET_KEY": get_secret_val("OKX_SECRET_KEY", ""),
-        "OKX_PASSPHRASE": get_secret_val("OKX_PASSPHRASE", ""),
-        "GEMINI_API_KEY": get_secret_val("GEMINI_API_KEY", ""),
-        "TELEGRAM_BOT_TOKEN": get_secret_val("TELEGRAM_BOT_TOKEN", ""),
-        "TELEGRAM_CHAT_ID": get_secret_val("TELEGRAM_CHAT_ID", ""),
-        "AI_TRADING_ENABLED": get_bool_secret("AI_TRADING_ENABLED", True),
-        "DRY_RUN": get_bool_secret("DRY_RUN", False),
-        "ARGON_BOSS_MODE": get_bool_secret("ARGON_BOSS_MODE", True),
+        "OKX_API_KEY": get_secret_val(("OKX_API_KEY", "API_KEY"), ""),
+        "OKX_SECRET_KEY": get_secret_val(("OKX_SECRET_KEY", "SECRET_KEY"), ""),
+        "OKX_PASSPHRASE": get_secret_val(("OKX_PASSPHRASE", "PASSPHRASE"), ""),
+        "GEMINI_API_KEY": get_secret_val(("GEMINI_API_KEY", "GOOGLE_API_KEY"), ""),
+        "TELEGRAM_BOT_TOKEN": get_secret_val(("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN", "BOT_TOKEN", "TG_TOKEN"), ""),
+        "TELEGRAM_CHAT_ID": get_secret_val(("TELEGRAM_CHAT_ID", "CHAT_ID", "TG_CHAT_ID"), ""),
+        "AI_TRADING_ENABLED": get_bool_secret(("AI_TRADING_ENABLED",), True),
+        "DRY_RUN": get_bool_secret(("DRY_RUN",), False),
+        "ARGON_BOSS_MODE": get_bool_secret(("ARGON_BOSS_MODE",), True),
     }
 
 
@@ -167,6 +176,7 @@ def get_engine():
         "s1_memory": {
             "active": False,
             "v19_clean": True,
+            "last_eval_box_key": "",
             "direction": "",
             "group_id": "",
             "setup_label": "",
@@ -841,7 +851,7 @@ def evaluate_argon4_background(
     else:
         trend_alignment = "COUNTER_TREND"
         trend_ok = False
-        trend_note = f"🛑 ZÁKAZ PROTITRENDU v19: {direction} proti {trend_regime} (povoleno jen CHOP + WITH_TREND)"
+        trend_note = f"🛑 ZÁKAZ PROTITRENDU {APP_VERSION}: {direction} proti {trend_regime} (povoleno jen CHOP + WITH_TREND)"
 
     # ZÁKON 1: 3H/6H Volume Profile pravidla
     b_lo = min(float(box_low_p), entry)
@@ -990,7 +1000,7 @@ def evaluate_argon4_background(
         ai_comment = fallback_comment
 
     telegram_block = (
-        f"\n🧠 <b>ARGON 4 AI ROZHODNUTÍ (v19 – PLNÁ PRAVOMOC):</b>\n"
+        f"\n🧠 <b>ARGON 4 AI ROZHODNUTÍ ({APP_VERSION} – PLNÁ PRAVOMOC):</b>\n"
         f"• Verdikt: {verdict} (Skóre: {score}/100 | Fix RRR: 2.30 | Čisté RRR po fees: {real_net_rrr})\n"
         f"• Kap. 1 (3H/6H VP): {vp_reason}\n"
         f"• 3H/6H Konfluence: {confluences}\n"
@@ -1026,20 +1036,6 @@ def evaluate_argon4_background(
         "telegram_block": telegram_block,
     }
 # === KONEC ČÁSTI 2 ===# === ZAČÁTEK ČÁSTI 3 ===
-# ==============================================================================
-# UPGRADE v19.1: OKAMŽITÝ BBO MAKER VSTUP PO UZAVŘENÍ BOXU + 5M RETEST POJISTKA
-# (Přepisuje vybrané konstanty z Části 1, aby nebylo nutné měnit zbytek souboru)
-# ==============================================================================
-APP_VERSION = "v19.1"
-ENTRY_ORDER_TIMEOUT_SEC = 300          # 5 minut timeout na nevyplněnou vstupní limitku
-MAX_MISSED_BREAKOUT_PCT = 0.0050       # Pokud cena utekla > 0.50 % mimo box, vlak ujel (skip)
-BOX_INVALIDATION_PCT = 0.0015          # Pokud cena prorazila > 0.15 % proti nám, absorpce padla
-CSV_LOG_PATH = "argon4_v19_1_trades.csv"
-
-for _extra_col in ("entry_mode", "entry_1m_delta_state"):
-    if _extra_col not in CSV_COLUMNS:
-        CSV_COLUMNS.append(_extra_col)
-
 
 # ==============================================================================
 # OKX AGENT: 1 ČISTÝ BBO MAKER VSTUP + 1 PEVNÝ 100% MAKER TP (BEZ 50/50, BEZ AUTO-BE)
@@ -1552,7 +1548,7 @@ def fetch_okx_data():
         return flow_metrics, candles_300, fut_map, spot_map, btc_price, candles_1m_fut
     except Exception:
         return (0.0,) * 9, [], {}, {}, 0.0, []
-
+# === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
 
 # ==============================================================================
 # SETUP 1 SKENER v19.1: OKAMŽITÝ BBO MAKER VSTUP PO UZAVŘENÍ MEDIUM / MACRO BOXU
@@ -2023,7 +2019,7 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
         return msg, bool(exec_ok)
     except Exception as e:
         return f"Načítám data Setupu 1 ({e})...", False
-# === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
+
 
 # ==============================================================================
 # POZADÍ 24/7 NONSTOP SMYČKA
@@ -2085,11 +2081,11 @@ def start_background_engine():
         t = threading.Thread(target=_background_scanner_loop, daemon=True, name="argon4_v19_loop")
         t.start()
         ENGINE["thread_started"] = True
-        add_ui_event("Spuštěn 24/7 NONSTOP motor ARGON 4 BOSS v19")
+        add_ui_event(f"Spuštěn 24/7 NONSTOP motor ARGON 4 BOSS {APP_VERSION}")
 
 
 # ==============================================================================
-# DIAGNOSTICKÝ TEST SPOJENÍ (TELEGRAM + OKX + GEMINI + SIMULACE v19)
+# DIAGNOSTICKÝ TEST SPOJENÍ (TELEGRAM + OKX + GEMINI + SIMULACE)
 # ==============================================================================
 def run_connection_test():
     cfg = load_runtime_config()
@@ -2129,7 +2125,7 @@ def run_connection_test():
 
     body = (
         f"✅ <b>Režim 24/7 NONSTOP s ARGON 4 BOSS MODE {APP_VERSION} běží!</b>\n"
-        f"• Aktivní strategie: <b>Pouze Setup 1 (MEDIUM + MACRO)</b> | MICRO a Setup 2 odstraněny\n"
+        f"• Aktivní strategie: <b>Pouze Setup 1 (MEDIUM + MACRO)</b> | Okamžitý BBO Maker vstup\n"
         f"• Trendový filtr: <b>Pouze CHOP + WITH_TREND</b> (tvrdý zákaz proti MILD i STRONG trendu)\n"
         f"• Argon SL pásma: <b>MEDIUM 0.25–0.30 %</b> | <b>MACRO 0.35–0.45 %</b> (kryté za VP/Swingy)\n"
         f"• Výstup: <b>100 % pozice na pevný Maker TP = 2.3x SL</b> (1 vstup, bez 50/50, bez Auto-BE)\n"
@@ -2147,8 +2143,10 @@ def run_connection_test():
 
 
 # ==============================================================================
-# STREAMLIT TERMINÁL UI
+# STREAMLIT TERMINÁL UI (S AUTOMATICKÝM REFRESHEM KAŽDÝCH 20 VTEŘIN)
 # ==============================================================================
+UI_AUTO_REFRESH_SEC = 20
+
 st.set_page_config(
     page_title=f"ARGON 4 BOSS {APP_VERSION} | BTC Orderflow",
     page_icon="⚡",
@@ -2171,20 +2169,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with ENGINE["lock"]:
-    snap = dict(ENGINE["latest_snapshot"])
-    hb_age = int(time.time() - ENGINE["last_heartbeat"]) if ENGINE["last_heartbeat"] > 0 else -1
-    last_err = ENGINE["last_cycle_error"]
-
-cfg_now = load_runtime_config()
-
 st.title(f"⚡ ARGON 4 BOSS MODE {APP_VERSION}")
-st.caption("Čistý Setup 1 (MEDIUM 0.25–0.30% | MACRO 0.35–0.45%) • Trend: CHOP + WITH_TREND • 100% Fixní Maker TP = 2.3x SL • 24/7 NONSTOP")
+st.caption("Čistý Setup 1 (MEDIUM 0.25–0.30% | MACRO 0.35–0.45%) • BBO Maker vstup • Trend: CHOP + WITH_TREND • 100% Fixní Maker TP = 2.3x SL • 24/7 NONSTOP")
 
 c_btn1, c_btn2, c_btn3, c_btn4 = st.columns(4)
 with c_btn1:
     if st.button("📲 OTESTOVAT SPOJENÍ", use_container_width=True):
-        with st.spinner("Testuji OKX, Telegram a Argon 4 v19..."):
+        with st.spinner(f"Testuji OKX, Telegram a Argon 4 {APP_VERSION}..."):
             ok_tg, okx_st = run_connection_test()
         if ok_tg:
             st.success(f"Telegram test odeslán! {okx_st}")
@@ -2200,6 +2191,7 @@ with c_btn3:
             ENGINE["cooldowns"]["S1_LOCK_1H"] = 0.0
             ENGINE["s1_locked_rank"] = 0
             ENGINE["s1_memory"]["active"] = False
+            ENGINE["s1_memory"]["last_eval_box_key"] = ""
         add_ui_event("Ruční reset 1H zámku S1")
         st.success("Zámek S1 a paměť krabice resetovány.")
 with c_btn4:
@@ -2215,61 +2207,82 @@ with c_btn4:
     else:
         st.button("📥 CSV zatím prázdné (0)", disabled=True, use_container_width=True)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Live BTC (XPERP)", f"{snap['btc_price']:.1f} $")
-m2.metric("Trend (3H+6H)", snap["trend_regime"])
-m3.metric("Aktuální okno (CET)", snap["session_tag"] or classify_prague_session())
-hb_txt = f"OK ({hb_age}s)" if hb_age >= 0 else "Startuji..."
-m4.metric("24/7 Heartbeat", hb_txt)
+auto_refresh_on = st.toggle(f"🔄 Automatický refresh displeje každých {UI_AUTO_REFRESH_SEC} s", value=True)
 
-if last_err:
-    st.warning(f"Poslední chyba cyklu: {last_err}")
 
-col_left, col_right = st.columns(2)
-with col_left:
-    st.subheader("📦 Setup 1 Skener (MEDIUM + MACRO)")
-    st.info(snap["s1_status"])
-    vp3 = snap["vp_3h"]
-    vp6 = snap["vp_6h"]
-    st.markdown(
-        f"""
-        <div class="metric-box">
-        <b>3H Volume Profile:</b> VAH <code>{vp3['vah']:.0f}$</code> | POC <code>{vp3['poc']:.0f}$</code> | VAL <code>{vp3['val']:.0f}$</code><br>
-        <b>6H Volume Profile:</b> VAH <code>{vp6['vah']:.0f}$</code> | POC <code>{vp6['poc']:.0f}$</code> | VAL <code>{vp6['val']:.0f}$</code><br>
-        <b>Trend detail:</b> {snap['trend_detail']}<br>
-        <b>Spot 3H / 6H:</b> {snap['spot_3h']:+.1f} BTC / {snap['spot_6h']:+.1f} BTC
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _render_live_dashboard_body():
+    with ENGINE["lock"]:
+        snap = dict(ENGINE["latest_snapshot"])
+        hb_age = int(time.time() - ENGINE["last_heartbeat"]) if ENGINE["last_heartbeat"] > 0 else -1
+        last_err = ENGINE["last_cycle_error"]
 
-with col_right:
-    st.subheader("🤖 OKX AI Agent & Flow Matrix")
-    st.success(snap["agent_status"])
-    cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = snap["flow_metrics"]
-    exec_lbl = "🧪 DRY-RUN" if cfg_now["DRY_RUN"] else ("🟢 LIVE (500 $)" if cfg_now["AI_TRADING_ENABLED"] else "⏸️ VYPNUTO")
-    st.markdown(
-        f"""
-        <div class="metric-box">
-        <b>Režim exekuce:</b> {exec_lbl} | <b>Boss Mode:</b> {'ZAP' if cfg_now['ARGON_BOSS_MODE'] else 'VYP'}<br>
-        <b>Pozice OKX:</b> {snap['open_position_info']}<br>
-        <b>Čekající příkazy:</b> {snap['pending_order_info']}<br>
-        <b>CVD (5M/25M/45M):</b> {cvd1:+.1f} / {cvd5:+.1f} / {cvd9:+.1f} BTC<br>
-        <b>Spot (5M/25M/45M):</b> {scvd1:+.1f} / {scvd5:+.1f} / {scvd9:+.1f} BTC<br>
-        <b>OI (5M/25M/45M):</b> {oi1:+.1f} / {oi5:+.1f} / {oi9:+.1f} BTC
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    cfg_now = load_runtime_config()
 
-st.subheader("📜 Poslední události terminálu")
-events = snap.get("recent_events", [])
-if events:
-    st.code("\n".join(events), language="text")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Live BTC (XPERP)", f"{snap['btc_price']:.1f} $")
+    m2.metric("Trend (3H+6H)", snap["trend_regime"])
+    m3.metric("Aktuální okno (CET)", snap["session_tag"] or classify_prague_session())
+    hb_txt = f"OK ({hb_age}s)" if hb_age >= 0 else "Startuji..."
+    m4.metric("24/7 Heartbeat", hb_txt)
+
+    if last_err:
+        st.warning(f"Poslední chyba cyklu: {last_err}")
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.subheader("📦 Setup 1 Skener (MEDIUM + MACRO)")
+        st.info(snap["s1_status"])
+        vp3 = snap["vp_3h"]
+        vp6 = snap["vp_6h"]
+        st.markdown(
+            f"""
+            <div class="metric-box">
+            <b>3H Volume Profile:</b> VAH <code>{vp3['vah']:.0f}$</code> | POC <code>{vp3['poc']:.0f}$</code> | VAL <code>{vp3['val']:.0f}$</code><br>
+            <b>6H Volume Profile:</b> VAH <code>{vp6['vah']:.0f}$</code> | POC <code>{vp6['poc']:.0f}$</code> | VAL <code>{vp6['val']:.0f}$</code><br>
+            <b>Trend detail:</b> {snap['trend_detail']}<br>
+            <b>Spot 3H / 6H:</b> {snap['spot_3h']:+.1f} BTC / {snap['spot_6h']:+.1f} BTC
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_right:
+        st.subheader("🤖 OKX AI Agent & Flow Matrix")
+        st.success(snap["agent_status"])
+        cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = snap["flow_metrics"]
+        exec_lbl = "🧪 DRY-RUN" if cfg_now["DRY_RUN"] else ("🟢 LIVE (500 $)" if cfg_now["AI_TRADING_ENABLED"] else "⏸️ VYPNUTO")
+        st.markdown(
+            f"""
+            <div class="metric-box">
+            <b>Režim exekuce:</b> {exec_lbl} | <b>Boss Mode:</b> {'ZAP' if cfg_now['ARGON_BOSS_MODE'] else 'VYP'}<br>
+            <b>Pozice OKX:</b> {snap['open_position_info']}<br>
+            <b>Čekající příkazy:</b> {snap['pending_order_info']}<br>
+            <b>CVD (5M/25M/45M):</b> {cvd1:+.1f} / {cvd5:+.1f} / {cvd9:+.1f} BTC<br>
+            <b>Spot (5M/25M/45M):</b> {scvd1:+.1f} / {scvd5:+.1f} / {scvd9:+.1f} BTC<br>
+            <b>OI (5M/25M/45M):</b> {oi1:+.1f} / {oi5:+.1f} / {oi9:+.1f} BTC
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.subheader("📜 Poslední události terminálu")
+    events = snap.get("recent_events", [])
+    if events:
+        st.code("\n".join(events), language="text")
+    else:
+        st.caption("Zatím žádné události.")
+
+    st.caption(f"Poslední aktualizace dat: {snap['updated_str']} (CET) | Zapsané obchody v CSV: {count_csv_rows()}")
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=UI_AUTO_REFRESH_SEC if auto_refresh_on else None)
+    def render_live_dashboard():
+        _render_live_dashboard_body()
+
+    render_live_dashboard()
 else:
-    st.caption("Zatím žádné události.")
-
-st.caption(f"Poslední aktualizace: {snap['updated_str']} (CET)")
+    _render_live_dashboard_body()
 # === KONEC ČÁSTI 4 ===
 
 
