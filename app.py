@@ -1026,9 +1026,23 @@ def evaluate_argon4_background(
         "telegram_block": telegram_block,
     }
 # === KONEC ČÁSTI 2 ===# === ZAČÁTEK ČÁSTI 3 ===
+# ==============================================================================
+# UPGRADE v19.1: OKAMŽITÝ BBO MAKER VSTUP PO UZAVŘENÍ BOXU + 5M RETEST POJISTKA
+# (Přepisuje vybrané konstanty z Části 1, aby nebylo nutné měnit zbytek souboru)
+# ==============================================================================
+APP_VERSION = "v19.1"
+ENTRY_ORDER_TIMEOUT_SEC = 300          # 5 minut timeout na nevyplněnou vstupní limitku
+MAX_MISSED_BREAKOUT_PCT = 0.0050       # Pokud cena utekla > 0.50 % mimo box, vlak ujel (skip)
+BOX_INVALIDATION_PCT = 0.0015          # Pokud cena prorazila > 0.15 % proti nám, absorpce padla
+CSV_LOG_PATH = "argon4_v19_1_trades.csv"
+
+for _extra_col in ("entry_mode", "entry_1m_delta_state"):
+    if _extra_col not in CSV_COLUMNS:
+        CSV_COLUMNS.append(_extra_col)
+
 
 # ==============================================================================
-# OKX AGENT: 1 ČISTÝ MAKER VSTUP + 1 PEVNÝ 100% MAKER TP (BEZ 50/50, BEZ AUTO-BE)
+# OKX AGENT: 1 ČISTÝ BBO MAKER VSTUP + 1 PEVNÝ 100% MAKER TP (BEZ 50/50, BEZ AUTO-BE)
 # ==============================================================================
 def get_open_position_okx():
     res = okx_signed_request("GET", f"/api/v5/account/positions?instId={OKX_INST_ID}")
@@ -1157,12 +1171,15 @@ def execute_okx_agent_trade(t_payload):
     entry_px = round(float(t_payload["entry"]), 1)
     sl_px = round(float(t_payload["sl_market"]), 1)
     tp_px = round(float(t_payload["tp_limit"]), 1)
+    box_low_p = float(t_payload.get("box_low_p", 0.0) or 0.0)
+    box_high_p = float(t_payload.get("box_high_p", 0.0) or 0.0)
+    entry_mode = str(t_payload.get("entry_mode", "BBO_IN_BOX"))
 
     if not cfg["AI_TRADING_ENABLED"]:
-        return True, f"🟡 AI AGENT: Exekuce vypnuta (Signál {direction} @ {entry_px:.0f}$ | SL {sl_px:.0f}$ | 100% TP {tp_px:.0f}$)"
+        return True, f"🟡 AI AGENT: Exekuce vypnuta (Signál {direction} [{entry_mode}] @ {entry_px:.0f}$ | SL {sl_px:.0f}$ | 100% TP {tp_px:.0f}$)"
 
     if cfg["DRY_RUN"]:
-        return True, f"🧪 AI AGENT (Dry-Run): {direction} (500$) @ {entry_px:.0f}$ | SL {sl_px:.0f}$ | 100% Maker TP {tp_px:.0f}$"
+        return True, f"🧪 AI AGENT (Dry-Run {APP_VERSION}): {direction} [{entry_mode}] (500$) @ {entry_px:.0f}$ | SL {sl_px:.0f}$ | 100% Maker TP {tp_px:.0f}$"
 
     if not (cfg["OKX_API_KEY"] and cfg["OKX_SECRET_KEY"] and cfg["OKX_PASSPHRASE"]):
         return False, "⚠️ AI AGENT: Chybí OKX API klíče v Secrets."
@@ -1176,13 +1193,19 @@ def execute_okx_agent_trade(t_payload):
 
     ensure_okx_leverage(direction)
 
-    # Zarovnání ceny vstupní post_only limitky proti aktuálnímu bid/ask (aby OKX limitku nezamítlo)
+    # Čerstvé BBO těsně před odesláním + tvrdá podlaha/strop na hraně krabice (nikdy nehoníme cenu mimo box!)
     _, bid_p, ask_p = get_okx_live_bbo(OKX_INST_ID)
     limit_px = entry_px
-    if direction == "LONG" and bid_p > 0:
-        limit_px = round(min(entry_px, bid_p), 1)
-    elif direction == "SHORT" and ask_p > 0:
-        limit_px = round(max(entry_px, ask_p), 1)
+    if direction == "SHORT":
+        if ask_p > 0:
+            floor_p = box_low_p if box_low_p > 0 else entry_px
+            limit_px = round(max(ask_p, floor_p), 1)
+            entry_mode = "BBO_IN_BOX" if ask_p >= floor_p else "RETEST_BOX_EDGE"
+    else:
+        if bid_p > 0:
+            ceil_p = box_high_p if box_high_p > 0 else entry_px
+            limit_px = round(min(bid_p, ceil_p), 1)
+            entry_mode = "BBO_IN_BOX" if bid_p <= ceil_p else "RETEST_BOX_EDGE"
 
     min_sl_pct, max_sl_pct = SL_BANDS.get(group_id, (0.0025, 0.0030))
     orig_sl_pct = max(min_sl_pct, min(max_sl_pct, abs(entry_px - sl_px) / max(entry_px, 1.0)))
@@ -1191,6 +1214,7 @@ def execute_okx_agent_trade(t_payload):
     tp_px = round(limit_px + FIXED_TP_SL_MULT * sl_dist, 1) if direction == "LONG" else round(limit_px - FIXED_TP_SL_MULT * sl_dist, 1)
 
     t_payload["entry"] = limit_px
+    t_payload["entry_mode"] = entry_mode
     t_payload["sl_market"] = sl_px
     t_payload["sl_pct"] = sl_dist / max(limit_px, 1.0)
     t_payload["tp_limit"] = tp_px
@@ -1200,54 +1224,77 @@ def execute_okx_agent_trade(t_payload):
     pos_mode = get_okx_pos_mode()
     open_side = "buy" if direction == "LONG" else "sell"
 
-    order_body = {
-        "instId": OKX_INST_ID,
-        "tdMode": OKX_MARGIN_MODE,
-        "side": open_side,
-        "ordType": "post_only",
-        "sz": str(total_ct),
-        "px": str(limit_px),
-        "attachAlgoOrds": [
-            {
-                "slTriggerPx": str(sl_px),
-                "slOrdPx": "-1",
-                "slTriggerPxType": "last",
-            }
-        ],
-    }
-    if pos_mode == "long_short_mode":
-        order_body["posSide"] = "long" if direction == "LONG" else "short"
+    # Odeslání post_only s jedním bezpečným pokusem navíc (+1 tick), kdyby cena cukla během přenosu
+    last_err_msg = ""
+    for attempt in range(2):
+        send_px = limit_px
+        if attempt == 1:
+            _, bid2, ask2 = get_okx_live_bbo(OKX_INST_ID)
+            if direction == "SHORT" and ask2 > 0:
+                floor_p = box_low_p if box_low_p > 0 else limit_px
+                send_px = round(max(ask2 + 1.0, floor_p), 1)
+            elif direction == "LONG" and bid2 > 0:
+                ceil_p = box_high_p if box_high_p > 0 else limit_px
+                send_px = round(min(bid2 - 1.0, ceil_p), 1)
 
-    res = okx_signed_request("POST", "/api/v5/trade/order", order_body)
-    if res.get("code") == "0" and res.get("data"):
-        d0 = res["data"][0]
-        if d0.get("sCode") == "0":
-            ord_id = str(d0.get("ordId", ""))
-            with ENGINE["lock"]:
-                ENGINE["has_open_or_pending"] = True
-                ENGINE["active_trade"] = {
-                    "active": True,
-                    "direction": direction,
-                    "group": group_id,
-                    "entry_ord_id": ord_id,
-                    "entry_px": limit_px,
-                    "sl_px": sl_px,
-                    "tp_px": tp_px,
-                    "target_ct": total_ct,
-                    "tp_ord_id": "",
-                    "tp_placed_sz": 0,
-                    "created_at": time.time(),
-                    "tp_notified": False,
-                    "sl_guard_checked": False,
+            sl_px = round(send_px * (1.0 - orig_sl_pct), 1) if direction == "LONG" else round(send_px * (1.0 + orig_sl_pct), 1)
+            sl_dist = abs(send_px - sl_px)
+            tp_px = round(send_px + FIXED_TP_SL_MULT * sl_dist, 1) if direction == "LONG" else round(send_px - FIXED_TP_SL_MULT * sl_dist, 1)
+            t_payload["entry"] = send_px
+            t_payload["sl_market"] = sl_px
+            t_payload["tp_limit"] = tp_px
+
+        order_body = {
+            "instId": OKX_INST_ID,
+            "tdMode": OKX_MARGIN_MODE,
+            "side": open_side,
+            "ordType": "post_only",
+            "sz": str(total_ct),
+            "px": str(send_px),
+            "attachAlgoOrds": [
+                {
+                    "slTriggerPx": str(sl_px),
+                    "slOrdPx": "-1",
+                    "slTriggerPxType": "last",
                 }
-            add_ui_event(f"ZADÁN 1x MAKER VSTUP {direction} ({total_ct} ct @ {limit_px:.0f}$ | SL {sl_px:.0f}$ | TP {tp_px:.0f}$)")
-            return True, (
-                f"🤖 AI AGENT (ARGON 4 BOSS v19): ZADAL 1x MAKER ({POSITION_SIZE_USD:.0f}$ / {total_ct} ct) "
-                f"VSTUP @ {limit_px:.0f}$ (SL {t_payload['sl_pct']*100:.2f}%: {sl_px:.0f}$ | "
-                f"100% Maker TP (2.3x SL): {tp_px:.0f}$)"
-            )
-        return False, f"❌ AI AGENT OKX zamítnutí: {d0.get('sMsg', d0)}"
-    return False, f"❌ AI AGENT chyba OKX: {res.get('msg', res)}"
+            ],
+        }
+        if pos_mode == "long_short_mode":
+            order_body["posSide"] = "long" if direction == "LONG" else "short"
+
+        res = okx_signed_request("POST", "/api/v5/trade/order", order_body)
+        if res.get("code") == "0" and res.get("data"):
+            d0 = res["data"][0]
+            if d0.get("sCode") == "0":
+                ord_id = str(d0.get("ordId", ""))
+                with ENGINE["lock"]:
+                    ENGINE["has_open_or_pending"] = True
+                    ENGINE["active_trade"] = {
+                        "active": True,
+                        "direction": direction,
+                        "group": group_id,
+                        "entry_ord_id": ord_id,
+                        "entry_px": send_px,
+                        "sl_px": sl_px,
+                        "tp_px": tp_px,
+                        "target_ct": total_ct,
+                        "tp_ord_id": "",
+                        "tp_placed_sz": 0,
+                        "created_at": time.time(),
+                        "tp_notified": False,
+                        "sl_guard_checked": False,
+                    }
+                add_ui_event(f"ZADÁN 1x MAKER [{entry_mode}] {direction} ({total_ct} ct @ {send_px:.0f}$ | SL {sl_px:.0f}$ | TP {tp_px:.0f}$)")
+                return True, (
+                    f"🤖 AI AGENT (ARGON 4 BOSS {APP_VERSION}): ZADAL 1x MAKER [{entry_mode}] ({POSITION_SIZE_USD:.0f}$ / {total_ct} ct) "
+                    f"VSTUP @ {send_px:.0f}$ (SL {t_payload['sl_pct']*100:.2f}%: {sl_px:.0f}$ | "
+                    f"100% Maker TP (2.3x SL): {tp_px:.0f}$ | Timeout 5 min)"
+                )
+            last_err_msg = str(d0.get("sMsg", d0))
+        else:
+            last_err_msg = str(res.get("msg", res))
+
+    return False, f"❌ AI AGENT OKX zamítnutí: {last_err_msg}"
 
 
 def manage_active_okx_lifecycle():
@@ -1272,19 +1319,31 @@ def manage_active_okx_lifecycle():
             f"Vstupní: {len(entry_ords)} | TP: {len(tp_ords)} | SL Algo: {len(algo_ords)}"
         )
 
-    # SCÉNÁŘ 1: Nevyplněná vstupní limitka po 15 minutách ➔ bezpečně zruš
-    if pos_sz == 0 and len(entry_ords) > 0:
-        now_s = time.time()
+    # Kontrola 5minutového timeoutu pro jakoukoliv nevyplněnou vstupní limitku (včetně zbytků po částečném plnění)
+    now_s = time.time()
+    if len(entry_ords) > 0:
         for eo in entry_ords:
             c_time_ms = float(eo.get("cTime", 0) or 0)
             age_sec = (now_s - (c_time_ms / 1000.0)) if c_time_ms > 0 else (now_s - at.get("created_at", now_s))
             if age_sec > ENTRY_ORDER_TIMEOUT_SEC:
                 if cancel_okx_order(eo.get("ordId")):
-                    add_ui_event(f"Zrušena nevyplněná vstupní limitka po {int(age_sec//60)} min")
-                    with ENGINE["lock"]:
-                        ENGINE["active_trade"]["active"] = False
-                        ENGINE["has_open_or_pending"] = False
-        return f"Čekám na vyplnění vstupní limitky ({len(entry_ords)}x)"
+                    add_ui_event(f"Zrušena nevyplněná vstupní limitka po {int(age_sec // 60)} min")
+                    if pos_sz == 0:
+                        with ENGINE["lock"]:
+                            ENGINE["active_trade"]["active"] = False
+                            ENGINE["has_open_or_pending"] = False
+                        odesli_upozorneni(
+                            "OKX_ENTRY_TIMEOUT",
+                            f"⏱️ AI AGENT {APP_VERSION}: VSTUPNÍ LIMITKA ZRUŠENA (5 MIN TIMEOUT)",
+                            (
+                                f"Vstupní Maker příkaz ({at.get('direction', '')} @ {at.get('entry_px', 0.0):.0f}$) "
+                                f"se nevyplnil do 5 minut a byl automaticky zrušen. Systém čeká na další čistou krabici."
+                            ),
+                            lock_duration=30,
+                            force=True,
+                        )
+        if pos_sz == 0:
+            return f"Čekám na vyplnění BBO/Retest limitky ({len(entry_ords)}x | max 5 min)"
 
     # SCÉNÁŘ 2: Otevřená pozice ➔ drž 1 čistý 100% Maker TP a SL pojistku (ŽÁDNÉ Auto-BE!)
     if pos_sz > 0:
@@ -1322,7 +1381,7 @@ def manage_active_okx_lifecycle():
                 if not already_notified:
                     odesli_upozorneni(
                         "OKX_TP_PLACED",
-                        "AI AGENT v19: 100% MAKER TP VLOŽEN DO ORDERBOOKU",
+                        f"AI AGENT {APP_VERSION}: 100% MAKER TP VLOŽEN DO ORDERBOOKU",
                         (
                             f"🎯 Pozice {direction} ({pos_sz} ct) otevřena @ {avg_px:.1f}$.\n"
                             f"• 100 % Maker TP (2.3x SL): <b>{tp_px:.0f}$</b>\n"
@@ -1363,121 +1422,32 @@ def manage_active_okx_lifecycle():
 
 
 # ==============================================================================
-# EXEKUČNÍ ENGINE SETUPU 1: BOD A (BOX) ➔ BOD B (1M CVD / 5M BOX CVD) ➔ BOD C (PB)
+# INFORMATIVNÍ MĚŘENÍ 1M DELTY PŘI VSTUPU (PRO AUDIT 6. 12. 2026 – NEBLOKUJE VSTUP)
 # ==============================================================================
-def evaluate_setup1_1m_entry(
-    direction,
-    confirm_1m_ts,
-    c1f,
-    btc_price,
-    setup_label,
-    group_id,
-    fut_map=None,
-    pb_pct=0.0012,
-    sl_pct=0.0025,
-):
-    mf = c1f[:90][::-1] if len(c1f) >= 90 else c1f[::-1]
+def analyze_1m_delta_snapshot(direction, confirm_1m_ts, c1f, fut_map=None):
+    try:
+        mf = c1f[:20][::-1] if len(c1f) >= 20 else c1f[::-1]
+        if len(mf) < 3:
+            return "NO_1M_DATA"
 
-    if len(mf) < 12:
-        pl = build_trade_plan(direction, btc_price, setup_label, group_id=group_id, sl_pct=sl_pct)
-        return False, "⏳ Čekám na 1M data...", pl
+        anch_f = compute_anchored_1m_map(mf, fut_map, is_spot=False)
+        deltas = [compute_single_1m_delta(c, is_spot=False, anchored_map=anch_f) for c in mf]
+        ts_list = [int(c[0]) for c in mf]
 
-    n = len(mf)
-    anch_f = compute_anchored_1m_map(mf, fut_map, is_spot=False)
+        d_live = deltas[-1]
+        d_prev1 = deltas[-2]
+        post_box_deltas = [deltas[i] for i in range(len(mf)) if ts_list[i] > confirm_1m_ts]
+        d_post = sum(post_box_deltas) if post_box_deltas else d_live
 
-    cf, rf = [], 0.0
-    ts_list, o1, h1, l1, c1 = [], [], [], [], []
-
-    for i in range(n):
-        rf += compute_single_1m_delta(mf[i], is_spot=False, anchored_map=anch_f)
-        cf.append(rf)
-        ts_list.append(int(mf[i][0]))
-        o1.append(float(mf[i][1]))
-        h1.append(float(mf[i][2]))
-        l1.append(float(mf[i][3]))
-        c1.append(float(mf[i][4]))
-
-    c1[-1] = btc_price
-    h1[-1] = max(h1[-1], btc_price)
-    l1[-1] = min(l1[-1], btc_price)
-
-    c_idx = 4
-    for idx, t_val in enumerate(ts_list):
-        if t_val <= confirm_1m_ts:
-            c_idx = idx
-    c_idx = max(4, min(c_idx, n - 1))
-
-    start_5m_idx = max(0, c_idx - 4)
-    last_5m_cvd_slice = cf[start_5m_idx:c_idx + 1]
-    last_5m_cvd_low = min(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
-    last_5m_cvd_high = max(last_5m_cvd_slice) if last_5m_cvd_slice else cf[c_idx]
-
-    def _track_post_lock_cvd_break(is_bullish):
-        if c_idx >= n - 1:
-            return False, -1, ""
-
-        local_swing_ref = None
-        for k in range(c_idx + 1, n):
-            if is_bullish:
-                if k >= c_idx + 2:
-                    prev_i = k - 1
-                    if cf[prev_i] >= cf[prev_i - 1] and cf[k] < cf[prev_i]:
-                        if local_swing_ref is None or cf[prev_i] < local_swing_ref:
-                            local_swing_ref = cf[prev_i]
-                if local_swing_ref is not None and cf[k] > local_swing_ref:
-                    return True, k, "1M CVD HH"
-                if cf[k] > last_5m_cvd_high and (cf[k] - cf[c_idx]) >= 3.0:
-                    return True, k, "Průraz 5M Box CVD High"
-            else:
-                if k >= c_idx + 2:
-                    prev_i = k - 1
-                    if cf[prev_i] <= cf[prev_i - 1] and cf[k] > cf[prev_i]:
-                        if local_swing_ref is None or cf[prev_i] > local_swing_ref:
-                            local_swing_ref = cf[prev_i]
-                if local_swing_ref is not None and cf[k] < local_swing_ref:
-                    return True, k, "1M CVD LL"
-                if cf[k] < last_5m_cvd_low and (cf[c_idx] - cf[k]) >= 3.0:
-                    return True, k, "Průraz 5M Box CVD Low"
-        return False, -1, ""
-
-    trg = False
-    txt = ""
-    plan_entry = btc_price
-    confirm_dt_str = datetime.fromtimestamp((confirm_1m_ts + 60000) / 1000.0, get_prague_now().tzinfo).strftime("%H:%M")
-
-    if direction == "SHORT":
-        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=False)
-        if f_ok:
-            trough_p = min(l1[f_brk_idx:])
-            lmt_p = trough_p * (1.0 + pb_pct)
-            plan_entry = lmt_p
-            if btc_price >= lmt_p or (f_brk_idx + 1 < n and max(h1[f_brk_idx + 1:]) >= lmt_p):
-                trg = True
-                plan_entry = max(btc_price, lmt_p)
-                txt = f"✅ MAKER SHORT SIGNÁL (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$ ({POSITION_SIZE_USD:.0f}$)"
-            else:
-                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB nahoru na {lmt_p:.0f}$)"
+        if direction == "SHORT":
+            weakening = (d_prev1 < 0.0) or (d_live < -1.0) or (d_post < -2.0)
         else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD LL nebo průraz posledního 5M CVD Low po {confirm_dt_str})"
-    else:
-        f_ok, f_brk_idx, brk_type = _track_post_lock_cvd_break(is_bullish=True)
-        if f_ok:
-            peak_p = max(h1[f_brk_idx:])
-            lmt_p = peak_p * (1.0 - pb_pct)
-            plan_entry = lmt_p
-            if btc_price <= lmt_p or (f_brk_idx + 1 < n and min(l1[f_brk_idx + 1:]) <= lmt_p):
-                trg = True
-                plan_entry = min(btc_price, lmt_p)
-                txt = f"✅ MAKER LONG SIGNÁL (Box uzamčen {confirm_dt_str} ➔ {brk_type} + PB {pb_pct*100:.2f}%) | Vstup: {plan_entry:.0f}$ ({POSITION_SIZE_USD:.0f}$)"
-            else:
-                txt = f"⏳ Bod B splněn ({brk_type} po {confirm_dt_str}) – čekám na Bod C ({pb_pct*100:.2f}% PB dolů na {lmt_p:.0f}$)"
-        else:
-            txt = f"⏳ Bod A uzamčen ({confirm_dt_str}) – čekám na Bod B (1M CVD HH nebo průraz posledního 5M CVD High po {confirm_dt_str})"
+            weakening = (d_prev1 > 0.0) or (d_live > 1.0) or (d_post > 2.0)
 
-    pl = build_trade_plan(direction, plan_entry, setup_label, group_id=group_id, sl_pct=sl_pct)
-    pl["trigger_ready"] = trg
-    txt += f" | Zákl. SL ({pl['sl_pct']*100:.2f}%): {pl['sl_market']:.0f}$ | 100% TP (2.3x): {pl['tp_limit']:.0f}$"
-    return trg, txt, pl
+        tag = "WEAKENING_OK" if weakening else "STILL_PUSHING"
+        return f"{tag} (1M uzavř.: {d_prev1:+.1f} | live: {d_live:+.1f} | po boxu: {d_post:+.1f} BTC)"
+    except Exception:
+        return "NO_1M_DATA"
 
 
 # ==============================================================================
@@ -1585,7 +1555,7 @@ def fetch_okx_data():
 
 
 # ==============================================================================
-# SETUP 1 SKENER v19: POUZE MEDIUM (0.25–0.30%) A MACRO (0.35–0.45%)
+# SETUP 1 SKENER v19.1: OKAMŽITÝ BBO MAKER VSTUP PO UZAVŘENÍ MEDIUM / MACRO BOXU
 # ==============================================================================
 def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow_metrics):
     try:
@@ -1600,32 +1570,13 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
             is_trade_busy = bool(ENGINE.get("has_open_or_pending", False))
 
         if is_trade_busy:
-            with ENGINE["lock"]:
-                ENGINE["s1_memory"]["active"] = False
             return "🔒 Aktivní pozice nebo čekající limitka na OKX – čekám na dokončení obchodu.", False
 
         if rem_s1 > 0 and locked_rank >= 3:
-            with ENGINE["lock"]:
-                ENGINE["s1_memory"]["active"] = False
             return f"🔒 Setup 1 [MACRO] uzamčen na 1H (zbývá {rem_s1 // 60 + 1} min).", False
 
         if len(candles_300) < 44 or btc_price <= 0:
             return "Načítám Top-Down 30M–180M strukturu svíček...", False
-
-        now_sec = time.time()
-        with ENGINE["lock"]:
-            mem = ENGINE["s1_memory"]
-            if not mem.get("v19_clean", False):
-                mem["active"] = False
-                mem["v19_clean"] = True
-
-            if mem["active"]:
-                if (now_sec - mem["locked_at_sec"]) > S1_MEMORY_TTL_SEC:
-                    mem["active"] = False
-                elif mem["direction"] == "SHORT" and btc_price > mem["zone_extreme_p"] * 1.0020:
-                    mem["active"] = False
-                elif mem["direction"] == "LONG" and btc_price < mem["zone_extreme_p"] * 0.9980:
-                    mem["active"] = False
 
         c_42_desc = [list(c) for c in candles_300[1:43]]
         c_42_asc = c_42_desc[::-1]
@@ -1644,9 +1595,9 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
 
         # POUZE 2 VARIANTY SETUPU 1: MACRO & MEDIUM (MICRO a Setup 2 odstraněny)
         groups_cfg = [
-            # (name, min_bars, max_bars, max_spread%, req_touches, req_cvd, pb_pct, base_sl_pct)
-            ("MACRO",  12, 36, 0.45, 3, 250.0, 0.0018, 0.0035),
-            ("MEDIUM",  6, 18, 0.30, 2, 100.0, 0.0012, 0.0025),
+            # (name, min_bars, max_bars, max_spread%, req_touches, req_cvd, base_sl_pct)
+            ("MACRO",  12, 36, 0.45, 3, 250.0, 0.0035),
+            ("MEDIUM",  6, 18, 0.30, 2, 100.0, 0.0025),
         ]
 
         detected_dir = None
@@ -1654,11 +1605,10 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
         detected_label = ""
         detected_header = ""
         detected_confirm_ts = 0
-        detected_zone_p = 0.0
+        detected_last_5m_ts = 0
         detected_box_low = 0.0
         detected_box_high = 0.0
         detected_box_mid = 0.0
-        detected_pb = 0.0012
         detected_sl = 0.0025
         detected_mins = 0
         detected_spread = 0.0
@@ -1667,7 +1617,7 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
 
         status_summaries = []
 
-        for g_name, min_b, max_b, max_spr, req_touches, req_cvd, g_pb, g_sl in groups_cfg:
+        for g_name, min_b, max_b, max_spr, req_touches, req_cvd, g_sl in groups_cfg:
             g_rank = GROUP_RANK.get(g_name, 2)
 
             if rem_s1 > 0 and g_rank <= locked_rank:
@@ -1802,11 +1752,10 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
                         f"{len(upper_touches)}x horní otest | CVD {box_cvd_short:+.1f} ≥ +{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
                     detected_confirm_ts = box_lock_1m_ts
-                    detected_zone_p = max(sub_h)
+                    detected_last_5m_ts = sub_ts[-1]
                     detected_box_low = min(sub_l)
                     detected_box_high = max(sub_h)
                     detected_box_mid = box_mid
-                    detected_pb = g_pb
                     detected_sl = g_sl
                     detected_mins = k_test * 5
                     detected_spread = box_spr_pct
@@ -1826,11 +1775,10 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
                         f"{len(lower_touches)}x spodní otest | CVD {box_cvd_long:+.1f} ≤ -{req_cvd:.0f} BTC [Spot bg: {box_spot_val:+.1f}])"
                     )
                     detected_confirm_ts = box_lock_1m_ts
-                    detected_zone_p = min(sub_l)
+                    detected_last_5m_ts = sub_ts[-1]
                     detected_box_low = min(sub_l)
                     detected_box_high = max(sub_h)
                     detected_box_mid = box_mid
-                    detected_pb = g_pb
                     detected_sl = g_sl
                     detected_mins = k_test * 5
                     detected_spread = box_spr_pct
@@ -1841,251 +1789,238 @@ def scan_setup_1(candles_300, candles_1m_fut, btc_price, fut_map, spot_map, flow
             if detected_dir is not None:
                 break
 
+        if detected_dir is None:
+            return " 📦 ".join(status_summaries), False
+
+        # Zabraň opakovanému vyhodnocování úplně stejné uzavřené 5M krabice během stejného 5M bloku
+        box_key = f"{detected_last_5m_ts}_{detected_group}_{detected_dir}"
         with ENGINE["lock"]:
-            mem = ENGINE["s1_memory"]
-            if detected_dir is not None:
-                new_rank = GROUP_RANK.get(detected_group, 2)
-                curr_rank = GROUP_RANK.get(mem.get("group_id", ""), 0)
+            if ENGINE["s1_memory"].get("last_eval_box_key", "") == box_key:
+                return f"{detected_header}\n⏳ Tato krabice už byla v aktuálním 5M okně vyhodnocena.", False
 
-                if not mem["active"] or mem["direction"] != detected_dir:
-                    mem.update({
-                        "active": True,
-                        "direction": detected_dir,
-                        "group_id": detected_group,
-                        "setup_label": detected_label,
-                        "header_text": detected_header,
-                        "confirm_1m_ts": detected_confirm_ts,
-                        "locked_at_sec": now_sec,
-                        "zone_extreme_p": detected_zone_p,
-                        "box_low_p": detected_box_low,
-                        "box_high_p": detected_box_high,
-                        "box_mid": detected_box_mid,
-                        "pb_pct": detected_pb,
-                        "sl_pct": detected_sl,
-                        "box_mins": detected_mins,
-                        "box_spread_pct": round(detected_spread, 2),
-                        "box_cvd": round(detected_cvd, 1),
-                        "box_spot": round(detected_spot, 1),
-                    })
-                elif new_rank > curr_rank:
-                    mem.update({
-                        "group_id": detected_group,
-                        "setup_label": detected_label,
-                        "header_text": detected_header + " [⬆️ UPGRADE]",
-                        "zone_extreme_p": max(mem["zone_extreme_p"], detected_zone_p) if detected_dir == "SHORT" else min(mem["zone_extreme_p"], detected_zone_p),
-                        "box_low_p": detected_box_low,
-                        "box_high_p": detected_box_high,
-                        "box_mid": detected_box_mid,
-                        "pb_pct": detected_pb,
-                        "sl_pct": detected_sl,
-                        "box_mins": detected_mins,
-                        "box_spread_pct": round(detected_spread, 2),
-                        "box_cvd": round(detected_cvd, 1),
-                        "box_spot": round(detected_spot, 1),
-                    })
-                elif new_rank == curr_rank:
-                    mem.update({
-                        "header_text": detected_header,
-                        "box_low_p": detected_box_low,
-                        "box_high_p": detected_box_high,
-                        "box_mid": detected_box_mid,
-                        "box_mins": detected_mins,
-                        "box_spread_pct": round(detected_spread, 2),
-                        "box_cvd": round(detected_cvd, 1),
-                        "box_spot": round(detected_spot, 1),
-                    })
+        # Kontrola živého BBO a pozice ceny vůči krabici (ŽÁDNÉ čekání na Bod B/C, ŽÁDNÉ honění dna!)
+        last_bbo, bid_p, ask_p = get_okx_live_bbo(OKX_INST_ID)
+        live_ref = last_bbo if last_bbo > 0 else btc_price
+        bid_use = bid_p if bid_p > 0 else live_ref
+        ask_use = ask_p if ask_p > 0 else live_ref
 
-            is_mem_active = mem["active"]
-            active_dir = mem["direction"]
-            active_group = mem.get("group_id", "MEDIUM")
-            active_label = mem["setup_label"]
-            active_header = mem["header_text"]
-            active_confirm_ts = mem["confirm_1m_ts"]
-            active_box_low = float(mem.get("box_low_p", btc_price))
-            active_box_high = float(mem.get("box_high_p", btc_price))
-            active_box_mid = float(mem.get("box_mid", 0.0))
-            active_pb = float(mem.get("pb_pct", 0.0012))
-            active_sl = float(mem.get("sl_pct", 0.0025))
-            m_mins = int(mem.get("box_mins", detected_mins))
-            m_spr = float(mem.get("box_spread_pct", detected_spread))
-            m_cvd = float(mem.get("box_cvd", detected_cvd))
-            m_spot = float(mem.get("box_spot", detected_spot))
+        if detected_dir == "SHORT":
+            if live_ref > detected_box_high * (1.0 + BOX_INVALIDATION_PCT):
+                with ENGINE["lock"]:
+                    ENGINE["s1_memory"]["last_eval_box_key"] = box_key
+                return f"{detected_header}\n❌ Invalidace: cena ({live_ref:.0f}$) už prorazila nad strop krabice ({detected_box_high:.0f}$).", False
+            if live_ref < detected_box_low * (1.0 - MAX_MISSED_BREAKOUT_PCT):
+                with ENGINE["lock"]:
+                    ENGINE["s1_memory"]["last_eval_box_key"] = box_key
+                return f"{detected_header}\n⏭️ Ujetý vlak: cena ({live_ref:.0f}$) už spadla >0.50 % pod dno krabice ({detected_box_low:.0f}$).", False
 
-        if is_mem_active:
-            entry_ok, entry_txt, t_payload = evaluate_setup1_1m_entry(
-                direction=active_dir,
-                confirm_1m_ts=active_confirm_ts,
-                c1f=candles_1m_fut,
-                btc_price=btc_price,
-                setup_label=active_label,
-                group_id=active_group,
-                fut_map=fut_map,
-                pb_pct=active_pb,
-                sl_pct=active_sl,
+            if ask_use >= detected_box_low:
+                target_entry = round(ask_use, 1)
+                entry_mode = "BBO_IN_BOX"
+            else:
+                target_entry = round(detected_box_low, 1)
+                entry_mode = "RETEST_BOX_EDGE"
+        else:
+            if live_ref < detected_box_low * (1.0 - BOX_INVALIDATION_PCT):
+                with ENGINE["lock"]:
+                    ENGINE["s1_memory"]["last_eval_box_key"] = box_key
+                return f"{detected_header}\n❌ Invalidace: cena ({live_ref:.0f}$) už prorazila pod dno krabice ({detected_box_low:.0f}$).", False
+            if live_ref > detected_box_high * (1.0 + MAX_MISSED_BREAKOUT_PCT):
+                with ENGINE["lock"]:
+                    ENGINE["s1_memory"]["last_eval_box_key"] = box_key
+                return f"{detected_header}\n⏭️ Ujetý vlak: cena ({live_ref:.0f}$) už utekla >0.50 % nad strop krabice ({detected_box_high:.0f}$).", False
+
+            if bid_use <= detected_box_high:
+                target_entry = round(bid_use, 1)
+                entry_mode = "BBO_IN_BOX"
+            else:
+                target_entry = round(detected_box_high, 1)
+                entry_mode = "RETEST_BOX_EDGE"
+
+        # Informativní stav 1M delty v okamžiku vstupu (pro audit 6. 12.)
+        delta_1m_state = analyze_1m_delta_snapshot(detected_dir, detected_confirm_ts, candles_1m_fut, fut_map)
+
+        t_payload = build_trade_plan(
+            direction=detected_dir,
+            entry_px=target_entry,
+            setup_label=detected_label,
+            group_id=detected_group,
+            sl_pct=detected_sl,
+        )
+        t_payload["trigger_ready"] = True
+        t_payload["box_low_p"] = detected_box_low
+        t_payload["box_high_p"] = detected_box_high
+        t_payload["entry_mode"] = entry_mode
+
+        ai_eval = evaluate_argon4_background(
+            group_id=detected_group,
+            direction=detected_dir,
+            t_payload=t_payload,
+            candles_300=candles_300,
+            flow_metrics=flow_metrics,
+            box_spot=detected_spot,
+            spot_map=spot_map,
+            box_low_p=detected_box_low,
+            box_high_p=detected_box_high,
+        )
+
+        vp3 = ai_eval["vp_3h"]
+        vp6 = ai_eval["vp_6h"]
+        cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
+        now_dt = get_prague_now()
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        sess_tag = classify_prague_session(now_dt)
+
+        mode_txt = "BBO uvnitř krabice" if entry_mode == "BBO_IN_BOX" else "Retest hrany krabice (5 min)"
+        entry_txt = (
+            f"✅ OKAMŽITÝ MAKER {detected_dir} [{mode_txt}] | Vstup: {target_entry:.0f}$ ({POSITION_SIZE_USD:.0f}$) | "
+            f"Argon SL ({ai_eval['rec_sl_pct']*100:.2f}%): {ai_eval['rec_sl_px']:.0f}$ | 100% TP (2.3x): {ai_eval['rec_tp_px']:.0f}$"
+        )
+        msg = f"{detected_header}\n{entry_txt}"
+
+        with ENGINE["lock"]:
+            ENGINE["s1_memory"]["last_eval_box_key"] = box_key
+
+        if argon_boss_mode and not ai_eval["approved"]:
+            agent_msg = f"🛑 ARGON 4 BOSS {APP_VERSION}: OBCHOD ZAMÍTNUT (Důvod: {ai_eval['ai_comment']})"
+            log_block = (
+                f"\n📊 <b>DATA PRO ANALÝZU (ZAMÍTNUTO {APP_VERSION}):</b>\n"
+                f"• Čas: {now_str} | Okno: {sess_tag} | Skupina: {detected_group} | Směr: {detected_dir} | Režim vstupu: {entry_mode}\n"
+                f"• 📉 1M Delta při vstupu (info pro 6.12.): {delta_1m_state}\n"
+                f"• Krabice: {detected_mins}M uzavř. ({detected_box_low:.0f}$–{detected_box_high:.0f}$) | Box CVD: {detected_cvd:+.1f}\n"
+                f"• Trend: {ai_eval['trend_3h']} ({ai_eval['trend_alignment']})\n"
+                f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
+                f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
             )
+            msg += f"\n{agent_msg}{log_block}"
+            tg_msg = msg + ai_eval["telegram_block"]
 
-            msg = f"{active_header}\n{entry_txt}"
-            if entry_ok:
-                ai_eval = evaluate_argon4_background(
-                    group_id=active_group,
-                    direction=active_dir,
-                    t_payload=t_payload,
-                    candles_300=candles_300,
-                    flow_metrics=flow_metrics,
-                    box_spot=m_spot,
-                    spot_map=spot_map,
-                    box_low_p=active_box_low,
-                    box_high_p=active_box_high,
-                )
-                vp3 = ai_eval["vp_3h"]
-                vp6 = ai_eval["vp_6h"]
-                cvd1, cvd5, cvd9, scvd1, scvd5, scvd9, oi1, oi5, oi9 = flow_metrics
-                now_dt = get_prague_now()
-                now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                sess_tag = classify_prague_session(now_dt)
-
-                if argon_boss_mode and not ai_eval["approved"]:
-                    agent_msg = f"🛑 ARGON 4 BOSS v19: OBCHOD ZAMÍTNUT (Důvod: {ai_eval['ai_comment']})"
-                    log_block = (
-                        f"\n📊 <b>DATA PRO ANALÝZU (ZAMÍTNUTO v19):</b>\n"
-                        f"• Čas: {now_str} | Okno: {sess_tag} | Skupina: {active_group} | Směr: {active_dir}\n"
-                        f"• Krabice: {m_mins}M uzavř. ({active_box_low:.0f}$–{active_box_high:.0f}$) | Box CVD: {m_cvd:+.1f}\n"
-                        f"• Trend: {ai_eval['trend_3h']} ({ai_eval['trend_alignment']})\n"
-                        f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
-                        f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
-                    )
-                    msg += f"\n{agent_msg}{log_block}"
-                    tg_msg = msg + ai_eval["telegram_block"]
-
-                    with ENGINE["lock"]:
-                        ENGINE["s1_memory"]["active"] = False
-
-                    sent_veto = odesli_upozorneni(
-                        f"S1_VETO_{active_group}_{active_dir}",
-                        f"🛑 ZAMÍTNUTO ARGONEM 4 v19: S1 [{active_group}] {active_dir}",
-                        tg_msg,
-                        lock_duration=900,
-                        force=False,
-                    )
-                    if sent_veto:
-                        add_ui_event(f"VETO S1 [{active_group}] {active_dir} ({ai_eval['trend_alignment']})")
-                        log_weekly_trade_event({
-                            "timestamp": now_str,
-                            "version": APP_VERSION,
-                            "session_tag": sess_tag,
-                            "setup": f"SETUP_1_{active_group}_VETO",
-                            "group": active_group,
-                            "direction": active_dir,
-                            "position_usd": 0.0,
-                            "entry": t_payload["entry"],
-                            "sl": ai_eval["rec_sl_px"],
-                            "sl_pct": round(ai_eval["rec_sl_pct"] * 100.0, 2),
-                            "tp": ai_eval["rec_tp_px"],
-                            "tp_pct": round(ai_eval["rec_tp_pct"] * 100.0, 2),
-                            "raw_rrr": ai_eval["raw_rrr"],
-                            "real_net_rrr": ai_eval["real_net_rrr"],
-                            "pb_pct": round(active_pb * 100.0, 2),
-                            "box_mins": m_mins,
-                            "box_body_spread_pct": m_spr,
-                            "box_low": round(active_box_low, 1),
-                            "box_high": round(active_box_high, 1),
-                            "box_mid": round(active_box_mid, 1),
-                            "box_cvd": m_cvd,
-                            "box_spot_bg": m_spot,
-                            "trend_regime": ai_eval["trend_regime"],
-                            "trend_alignment": ai_eval["trend_alignment"],
-                            "trend_3h_6h_detail": ai_eval["trend_3h"],
-                            "spot_3h_6h": ai_eval["spot_3h_6h"],
-                            "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
-                            "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
-                            "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                            "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
-                            "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
-                            "vp_confluences_3h_6h": ai_eval["vp_confluences"],
-                            "vp_obstacles_to_tp": ai_eval["vp_obstacles"],
-                            "agent_status": agent_msg,
-                            "ai_verdict": ai_eval["verdict"],
-                            "ai_score": ai_eval["score"],
-                            "ai_comment": ai_eval["ai_comment"],
-                        })
-                    return msg, False
-
-                t_payload["sl_market"] = float(ai_eval["rec_sl_px"])
-                t_payload["sl_pct"] = float(ai_eval["rec_sl_pct"])
-                t_payload["tp_limit"] = float(ai_eval["rec_tp_px"])
-                t_payload["tp_pct"] = float(ai_eval["rec_tp_pct"])
-                t_payload["real_net_rrr"] = float(ai_eval["real_net_rrr"])
-
-                exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
-
-                log_block = (
-                    f"\n📊 <b>DATA PRO ANALÝZU (v19 – 6.12. AUDIT):</b>\n"
-                    f"• Čas: {now_str} | Okno: <b>{sess_tag}</b> | Skupina: {active_group} | Směr: {active_dir} | Pozice: {POSITION_SIZE_USD:.0f}$\n"
-                    f"• Parametry: PB {active_pb*100:.2f}% | Argon SL ({t_payload['sl_pct']*100:.2f}%): <b>{t_payload['sl_market']:.0f}$</b> | 100% TP (2.3x SL): <b>{t_payload['tp_limit']:.0f}$</b>\n"
-                    f"• Krabice: {m_mins}M uzavř. ({active_box_low:.0f}$–{active_box_high:.0f}$) | Střed: {active_box_mid:.0f}$ | Box CVD: {m_cvd:+.1f} | Box Spot: {m_spot:+.1f}\n"
-                    f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
-                    f"• Spot Trend: {ai_eval['spot_3h_6h']} | Trend: {ai_eval['trend_3h']}\n"
-                    f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
-                    f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
-                )
-                msg += f"\n{agent_msg}{log_block}"
-                tg_msg = msg + ai_eval["telegram_block"]
-
-                if exec_ok:
-                    log_weekly_trade_event({
-                        "timestamp": now_str,
-                        "version": APP_VERSION,
-                        "session_tag": sess_tag,
-                        "setup": f"SETUP_1_{active_group}",
-                        "group": active_group,
-                        "direction": active_dir,
-                        "position_usd": POSITION_SIZE_USD,
-                        "entry": t_payload["entry"],
-                        "sl": t_payload["sl_market"],
-                        "sl_pct": round(t_payload["sl_pct"] * 100.0, 2),
-                        "tp": t_payload["tp_limit"],
-                        "tp_pct": round(t_payload["tp_pct"] * 100.0, 2),
-                        "raw_rrr": 2.30,
-                        "real_net_rrr": t_payload["real_net_rrr"],
-                        "pb_pct": round(active_pb * 100.0, 2),
-                        "box_mins": m_mins,
-                        "box_body_spread_pct": m_spr,
-                        "box_low": round(active_box_low, 1),
-                        "box_high": round(active_box_high, 1),
-                        "box_mid": round(active_box_mid, 1),
-                        "box_cvd": m_cvd,
-                        "box_spot_bg": m_spot,
-                        "trend_regime": ai_eval["trend_regime"],
-                        "trend_alignment": ai_eval["trend_alignment"],
-                        "trend_3h_6h_detail": ai_eval["trend_3h"],
-                        "spot_3h_6h": ai_eval["spot_3h_6h"],
-                        "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
-                        "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
-                        "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
-                        "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
-                        "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
-                        "vp_confluences_3h_6h": ai_eval["vp_confluences"],
-                        "vp_obstacles_to_tp": ai_eval["vp_obstacles"],
-                        "agent_status": agent_msg,
-                        "ai_verdict": ai_eval["verdict"],
-                        "ai_score": ai_eval["score"],
-                        "ai_comment": ai_eval["ai_comment"],
-                    })
-                    with ENGINE["lock"]:
-                        ENGINE["s1_memory"]["active"] = False
-                    set_s1_locked_rank(GROUP_RANK.get(active_group, 3))
-                    odesli_upozorneni(
-                        "S1_LOCK_1H",
-                        f"SETUP 1 [{active_group}]: {active_dir} SCHVÁLENO ARGONEM 4 v19",
-                        tg_msg,
-                        lock_duration=S1_COOLDOWN_SEC,
-                        force=True,
-                    )
-                return msg, bool(exec_ok)
-
+            sent_veto = odesli_upozorneni(
+                f"S1_VETO_{detected_group}_{detected_dir}",
+                f"🛑 ZAMÍTNUTO ARGONEM 4 {APP_VERSION}: S1 [{detected_group}] {detected_dir}",
+                tg_msg,
+                lock_duration=900,
+                force=False,
+            )
+            if sent_veto:
+                add_ui_event(f"VETO S1 [{detected_group}] {detected_dir} ({ai_eval['trend_alignment']})")
+                log_weekly_trade_event({
+                    "timestamp": now_str,
+                    "version": APP_VERSION,
+                    "session_tag": sess_tag,
+                    "setup": f"SETUP_1_{detected_group}_VETO",
+                    "group": detected_group,
+                    "direction": detected_dir,
+                    "position_usd": 0.0,
+                    "entry": t_payload["entry"],
+                    "sl": ai_eval["rec_sl_px"],
+                    "sl_pct": round(ai_eval["rec_sl_pct"] * 100.0, 2),
+                    "tp": ai_eval["rec_tp_px"],
+                    "tp_pct": round(ai_eval["rec_tp_pct"] * 100.0, 2),
+                    "raw_rrr": ai_eval["raw_rrr"],
+                    "real_net_rrr": ai_eval["real_net_rrr"],
+                    "pb_pct": 0.0,
+                    "box_mins": detected_mins,
+                    "box_body_spread_pct": round(detected_spread, 2),
+                    "box_low": round(detected_box_low, 1),
+                    "box_high": round(detected_box_high, 1),
+                    "box_mid": round(detected_box_mid, 1),
+                    "box_cvd": round(detected_cvd, 1),
+                    "box_spot_bg": round(detected_spot, 1),
+                    "trend_regime": ai_eval["trend_regime"],
+                    "trend_alignment": ai_eval["trend_alignment"],
+                    "trend_3h_6h_detail": ai_eval["trend_3h"],
+                    "spot_3h_6h": ai_eval["spot_3h_6h"],
+                    "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
+                    "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
+                    "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
+                    "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
+                    "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
+                    "vp_confluences_3h_6h": ai_eval["vp_confluences"],
+                    "vp_obstacles_to_tp": ai_eval["vp_obstacles"],
+                    "agent_status": agent_msg,
+                    "ai_verdict": ai_eval["verdict"],
+                    "ai_score": ai_eval["score"],
+                    "ai_comment": ai_eval["ai_comment"],
+                    "entry_mode": entry_mode,
+                    "entry_1m_delta_state": delta_1m_state,
+                })
             return msg, False
 
-        return " 📦 ".join(status_summaries), False
+        t_payload["sl_market"] = float(ai_eval["rec_sl_px"])
+        t_payload["sl_pct"] = float(ai_eval["rec_sl_pct"])
+        t_payload["tp_limit"] = float(ai_eval["rec_tp_px"])
+        t_payload["tp_pct"] = float(ai_eval["rec_tp_pct"])
+        t_payload["real_net_rrr"] = float(ai_eval["real_net_rrr"])
+
+        exec_ok, agent_msg = execute_okx_agent_trade(t_payload)
+        final_entry_mode = t_payload.get("entry_mode", entry_mode)
+
+        log_block = (
+            f"\n📊 <b>DATA PRO ANALÝZU ({APP_VERSION} – 6.12. AUDIT):</b>\n"
+            f"• Čas: {now_str} | Okno: <b>{sess_tag}</b> | Skupina: {detected_group} | Směr: {detected_dir} | Pozice: {POSITION_SIZE_USD:.0f}$\n"
+            f"• Režim vstupu: <b>{final_entry_mode}</b> | Argon SL ({t_payload['sl_pct']*100:.2f}%): <b>{t_payload['sl_market']:.0f}$</b> | 100% TP (2.3x SL): <b>{t_payload['tp_limit']:.0f}$</b>\n"
+            f"• 📉 1M Delta při vstupu (info pro 6.12.): <b>{delta_1m_state}</b>\n"
+            f"• Krabice: {detected_mins}M uzavř. ({detected_box_low:.0f}$–{detected_box_high:.0f}$) | Střed: {detected_box_mid:.0f}$ | Box CVD: {detected_cvd:+.1f} | Box Spot: {detected_spot:+.1f}\n"
+            f"• Matrix 5M/25M/45M: CVD ({cvd1:+.1f}/{cvd5:+.1f}/{cvd9:+.1f}) | Spot ({scvd1:+.1f}/{scvd5:+.1f}/{scvd9:+.1f}) | OI ({oi1:+.1f}/{oi5:+.1f}/{oi9:+.1f})\n"
+            f"• Spot Trend: {ai_eval['spot_3h_6h']} | Trend: {ai_eval['trend_3h']}\n"
+            f"• 3H VP: VAH {vp3['vah']:.0f}$ / POC {vp3['poc']:.0f}$ / VAL {vp3['val']:.0f}$\n"
+            f"• 6H VP: VAH {vp6['vah']:.0f}$ / POC {vp6['poc']:.0f}$ / VAL {vp6['val']:.0f}$"
+        )
+        msg += f"\n{agent_msg}{log_block}"
+        tg_msg = msg + ai_eval["telegram_block"]
+
+        if exec_ok:
+            log_weekly_trade_event({
+                "timestamp": now_str,
+                "version": APP_VERSION,
+                "session_tag": sess_tag,
+                "setup": f"SETUP_1_{detected_group}",
+                "group": detected_group,
+                "direction": detected_dir,
+                "position_usd": POSITION_SIZE_USD,
+                "entry": t_payload["entry"],
+                "sl": t_payload["sl_market"],
+                "sl_pct": round(t_payload["sl_pct"] * 100.0, 2),
+                "tp": t_payload["tp_limit"],
+                "tp_pct": round(t_payload["tp_pct"] * 100.0, 2),
+                "raw_rrr": 2.30,
+                "real_net_rrr": t_payload["real_net_rrr"],
+                "pb_pct": 0.0,
+                "box_mins": detected_mins,
+                "box_body_spread_pct": round(detected_spread, 2),
+                "box_low": round(detected_box_low, 1),
+                "box_high": round(detected_box_high, 1),
+                "box_mid": round(detected_box_mid, 1),
+                "box_cvd": round(detected_cvd, 1),
+                "box_spot_bg": round(detected_spot, 1),
+                "trend_regime": ai_eval["trend_regime"],
+                "trend_alignment": ai_eval["trend_alignment"],
+                "trend_3h_6h_detail": ai_eval["trend_3h"],
+                "spot_3h_6h": ai_eval["spot_3h_6h"],
+                "cvd_5m_25m_45m": [round(cvd1, 1), round(cvd5, 1), round(cvd9, 1)],
+                "spot_5m_25m_45m": [round(scvd1, 1), round(scvd5, 1), round(scvd9, 1)],
+                "oi_5m_25m_45m": [round(oi1, 1), round(oi5, 1), round(oi9, 1)],
+                "vp_3h_vah_poc_val": [round(vp3["vah"], 0), round(vp3["poc"], 0), round(vp3["val"], 0)],
+                "vp_6h_vah_poc_val": [round(vp6["vah"], 0), round(vp6["poc"], 0), round(vp6["val"], 0)],
+                "vp_confluences_3h_6h": ai_eval["vp_confluences"],
+                "vp_obstacles_to_tp": ai_eval["vp_obstacles"],
+                "agent_status": agent_msg,
+                "ai_verdict": ai_eval["verdict"],
+                "ai_score": ai_eval["score"],
+                "ai_comment": ai_eval["ai_comment"],
+                "entry_mode": final_entry_mode,
+                "entry_1m_delta_state": delta_1m_state,
+            })
+            set_s1_locked_rank(GROUP_RANK.get(detected_group, 3))
+            odesli_upozorneni(
+                "S1_LOCK_1H",
+                f"SETUP 1 [{detected_group}]: {detected_dir} SCHVÁLENO ARGONEM 4 {APP_VERSION}",
+                tg_msg,
+                lock_duration=S1_COOLDOWN_SEC,
+                force=True,
+            )
+        return msg, bool(exec_ok)
     except Exception as e:
         return f"Načítám data Setupu 1 ({e})...", False
 # === KONEC ČÁSTI 3 ===# === ZAČÁTEK ČÁSTI 4 ===
